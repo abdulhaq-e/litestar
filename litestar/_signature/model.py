@@ -98,7 +98,6 @@ class SignatureModel(Struct):
 
     _data_dto: ClassVar[Optional[Type[AbstractDTO]]]
     _dependency_name_set: ClassVar[Set[str]]
-    # NOTE: we have to use Set and Dict here because python 3.8 goes haywire if we use 'set' and 'dict'
     _fields: ClassVar[Dict[str, FieldDefinition]]
     _return_annotation: ClassVar[Any]
 
@@ -253,6 +252,7 @@ class SignatureModel(Struct):
                 field_definition=field_definition,
                 type_decoders=[*(type_decoders or []), *DEFAULT_TYPE_DECODERS],
                 meta_data=meta_data,
+                data_dto=data_dto,
             )
 
             default = field_definition.default if field_definition.has_default else NODEFAULT
@@ -278,7 +278,12 @@ class SignatureModel(Struct):
         field_definition: FieldDefinition,
         type_decoders: TypeDecodersSequence,
         meta_data: Meta | None = None,
+        data_dto: type[AbstractDTO] | None = None,
     ) -> Any:
+        # DTOs have already validated their data, so we can just use Any here
+        if field_definition.name == "data" and data_dto:
+            return Any
+
         annotation = _normalize_annotation(field_definition=field_definition)
 
         if annotation is Any:
@@ -291,9 +296,10 @@ class SignatureModel(Struct):
                     type_decoders=type_decoders,
                     meta_data=meta_data,
                 )
-                for inner_type in (t for t in field_definition.inner_types if t.annotation is not type(None))
+                for inner_type in field_definition.inner_types
+                if not inner_type.is_none_type
             ]
-            return Optional[types[0]] if field_definition.is_optional else Union[tuple(types)]  # pyright: ignore
+            return Optional[Union[tuple(types)]] if field_definition.is_optional else Union[tuple(types)]  # pyright: ignore
 
         if decoder := _get_decoder_for_type(annotation, type_decoders=type_decoders):
             # FIXME: temporary (hopefully) hack, see: https://github.com/jcrist/msgspec/issues/497

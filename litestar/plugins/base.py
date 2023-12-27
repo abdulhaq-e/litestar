@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from litestar.config.app import AppConfig
     from litestar.dto import AbstractDTO
     from litestar.openapi.spec import Schema
+    from litestar.routes import BaseRoute
     from litestar.typing import FieldDefinition
 
 __all__ = (
@@ -67,6 +68,15 @@ class InitPluginProtocol(Protocol):
             The app config object.
         """
         return app_config  # pragma: no cover
+
+
+class ReceiveRoutePlugin:
+    """Receive routes as they are added to the application."""
+
+    __slots__ = ()
+
+    def receive_route(self, route: BaseRoute) -> None:
+        """Receive routes as they are registered on an application."""
 
 
 @runtime_checkable
@@ -179,6 +189,38 @@ class OpenAPISchemaPlugin(OpenAPISchemaPluginProtocol):
     """Plugin to extend the support of OpenAPI schema generation for non-library types."""
 
     @staticmethod
+    def is_plugin_supported_type(value: Any) -> bool:
+        """Given a value of indeterminate type, determine if this value is supported by the plugin.
+
+        This is called by the default implementation of :meth:`is_plugin_supported_field` for
+        backwards compatibility. User's should prefer to override that method instead.
+
+        Args:
+            value: An arbitrary value.
+
+        Returns:
+            A bool indicating whether the value is supported by the plugin.
+        """
+        raise NotImplementedError(
+            "One of either is_plugin_supported_type or is_plugin_supported_field should be defined. "
+            "The default implementation of is_plugin_supported_field calls is_plugin_supported_type "
+            "for backwards compatibility. Users should prefer to override is_plugin_supported_field "
+            "as it receives a 'FieldDefinition' instance which is more useful than a raw type."
+        )
+
+    def is_plugin_supported_field(self, field_definition: FieldDefinition) -> bool:
+        """Given a :class:`FieldDefinition <litestar.typing.FieldDefinition>` that represents an indeterminate type,
+        determine if this value is supported by the plugin
+
+        Args:
+            field_definition: A parsed type.
+
+        Returns:
+            Whether the type is supported by the plugin.
+        """
+        return self.is_plugin_supported_type(field_definition.annotation)
+
+    @staticmethod
     def is_undefined_sentinel(value: Any) -> bool:
         """Return ``True`` if ``value`` should be treated as an undefined field"""
         return False
@@ -192,12 +234,13 @@ class OpenAPISchemaPlugin(OpenAPISchemaPluginProtocol):
 
 
 PluginProtocol = Union[
-    SerializationPluginProtocol,
-    InitPluginProtocol,
-    OpenAPISchemaPluginProtocol,
-    OpenAPISchemaPlugin,
-    CLIPluginProtocol,
     CLIPlugin,
+    CLIPluginProtocol,
+    InitPluginProtocol,
+    OpenAPISchemaPlugin,
+    OpenAPISchemaPluginProtocol,
+    ReceiveRoutePlugin,
+    SerializationPluginProtocol,
 ]
 
 PluginT = TypeVar("PluginT", bound=PluginProtocol)
@@ -207,6 +250,7 @@ class PluginRegistry:
     __slots__ = {
         "init": "Plugins that implement the InitPluginProtocol",
         "openapi": "Plugins that implement the OpenAPISchemaPluginProtocol",
+        "receive_route": "ReceiveRoutePlugin types",
         "serialization": "Plugins that implement the SerializationPluginProtocol",
         "cli": "Plugins that implement the CLIPluginProtocol",
         "_plugins_by_type": None,
@@ -219,6 +263,7 @@ class PluginRegistry:
         self._plugins = frozenset(plugins)
         self.init = tuple(p for p in plugins if isinstance(p, InitPluginProtocol))
         self.openapi = tuple(p for p in plugins if isinstance(p, OpenAPISchemaPluginProtocol))
+        self.receive_route = tuple(p for p in plugins if isinstance(p, ReceiveRoutePlugin))
         self.serialization = tuple(p for p in plugins if isinstance(p, SerializationPluginProtocol))
         self.cli = tuple(p for p in plugins if isinstance(p, CLIPluginProtocol))
 

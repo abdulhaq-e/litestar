@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import deque
 from copy import copy
-from dataclasses import MISSING, fields
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum, EnumMeta
@@ -29,14 +28,12 @@ from typing import (
     Tuple,
     Union,
     cast,
-    get_origin,
 )
 from uuid import UUID
 
-from msgspec import Struct
-from msgspec.structs import fields as msgspec_struct_fields
-from typing_extensions import NotRequired, Required, get_args
+from typing_extensions import Self, get_args
 
+from litestar._openapi.datastructures import SchemaRegistry
 from litestar._openapi.schema_generation.constrained_fields import (
     create_date_constrained_field_schema,
     create_numerical_constrained_field_schema,
@@ -51,18 +48,16 @@ from litestar._openapi.schema_generation.utils import (
 )
 from litestar.datastructures import UploadFile
 from litestar.exceptions import ImproperlyConfiguredException
-from litestar.openapi.spec import Reference
 from litestar.openapi.spec.enums import OpenAPIFormat, OpenAPIType
 from litestar.openapi.spec.schema import Schema, SchemaDataContainer
-from litestar.pagination import ClassicPagination, CursorPagination, OffsetPagination
 from litestar.params import BodyKwarg, ParameterKwarg
 from litestar.plugins import OpenAPISchemaPlugin
 from litestar.types import Empty
+from litestar.types.builtin_types import NoneType
 from litestar.typing import FieldDefinition
 from litestar.utils.helpers import get_name
 from litestar.utils.predicates import (
     is_class_and_subclass,
-    is_optional_union,
     is_undefined_sentinel,
 )
 from litestar.utils.typing import (
@@ -71,30 +66,30 @@ from litestar.utils.typing import (
 )
 
 if TYPE_CHECKING:
-    from msgspec.structs import FieldInfo
-
-    from litestar.openapi.spec import Example
+    from litestar._openapi.datastructures import OpenAPIContext
+    from litestar.openapi.spec import Example, Reference
     from litestar.plugins import OpenAPISchemaPluginProtocol
 
 KWARG_DEFINITION_ATTRIBUTE_TO_OPENAPI_PROPERTY_MAP: dict[str, str] = {
-    "content_encoding": "contentEncoding",
+    "content_encoding": "content_encoding",
     "default": "default",
     "description": "description",
     "enum": "enum",
     "examples": "examples",
-    "external_docs": "externalDocs",
+    "external_docs": "external_docs",
     "format": "format",
     "ge": "minimum",
-    "gt": "exclusiveMinimum",
+    "gt": "exclusive_minimum",
     "le": "maximum",
-    "lt": "exclusiveMaximum",
-    "max_items": "maxItems",
-    "max_length": "maxLength",
-    "min_items": "minItems",
-    "min_length": "minLength",
-    "multiple_of": "multipleOf",
+    "lt": "exclusive_maximum",
+    "max_items": "max_items",
+    "max_length": "max_length",
+    "min_items": "min_items",
+    "min_length": "min_length",
+    "multiple_of": "multiple_of",
     "pattern": "pattern",
     "title": "title",
+    "read_only": "read_only",
 }
 
 TYPE_MAP: dict[type[Any] | None | Any, Schema] = {
@@ -115,6 +110,7 @@ TYPE_MAP: dict[type[Any] | None | Any, Schema] = {
     MutableMapping: Schema(type=OpenAPIType.OBJECT),
     MutableSequence: Schema(type=OpenAPIType.ARRAY),
     None: Schema(type=OpenAPIType.NULL),
+    NoneType: Schema(type=OpenAPIType.NULL),
     OrderedDict: Schema(type=OpenAPIType.OBJECT),
     Path: Schema(type=OpenAPIType.STRING, format=OpenAPIFormat.URI),
     Pattern: Schema(type=OpenAPIType.STRING, format=OpenAPIFormat.REGEX),
@@ -143,6 +139,27 @@ TYPE_MAP: dict[type[Any] | None | Any, Schema] = {
         content_media_type="application/octet-stream",
     ),
 }
+
+
+def _types_in_list(lst: list[Any]) -> list[OpenAPIType] | OpenAPIType:
+    """Extract unique OpenAPITypes present in the values of a list.
+
+    Args:
+        lst: A list of values
+
+    Returns:
+        OpenAPIType in the given list. If more then one exists, return
+        a list of OpenAPITypes.
+    """
+    schema_types: list[OpenAPIType] = []
+    for item in lst:
+        schema_type = TYPE_MAP[type(item)].type
+        if isinstance(schema_type, OpenAPIType):
+            schema_types.append(schema_type)
+        else:
+            raise RuntimeError("Unexpected type for schema item")  # pragma: no cover
+    schema_types = list(set(schema_types))
+    return schema_types[0] if len(schema_types) == 1 else schema_types
 
 
 def _get_type_schema_name(field_definition: FieldDefinition) -> str:
@@ -177,10 +194,9 @@ def create_enum_schema(annotation: EnumMeta, include_null: bool = False) -> Sche
         A schema instance.
     """
     enum_values: list[str | int | None] = [v.value for v in annotation]  # type: ignore
-    if include_null:
+    if include_null and None not in enum_values:
         enum_values.append(None)
-    openapi_type = OpenAPIType.STRING if isinstance(enum_values[0], str) else OpenAPIType.INTEGER
-    return Schema(type=openapi_type, enum=enum_values)
+    return Schema(type=_types_in_list(enum_values), enum=enum_values)
 
 
 def _iter_flat_literal_args(annotation: Any) -> Iterable[Any]:
@@ -210,9 +226,9 @@ def create_literal_schema(annotation: Any, include_null: bool = False) -> Schema
         A schema instance.
     """
     args = list(_iter_flat_literal_args(annotation))
-    if include_null:
+    if include_null and None not in args:
         args.append(None)
-    schema = copy(TYPE_MAP[type(args[0])])
+    schema = Schema(type=_types_in_list(args))
     if len(args) > 1:
         schema.enum = args
     else:
@@ -234,40 +250,52 @@ def create_schema_for_annotation(annotation: Any) -> Schema:
 
 
 class SchemaCreator:
-    __slots__ = ("generate_examples", "plugins", "schemas", "prefer_alias", "dto_for")
+    __slots__ = ("generate_examples", "plugins", "prefer_alias", "schema_registry")
 
     def __init__(
         self,
         generate_examples: bool = False,
         plugins: Iterable[OpenAPISchemaPluginProtocol] | None = None,
-        schemas: dict[str, Schema] | None = None,
         prefer_alias: bool = True,
+        schema_registry: SchemaRegistry | None = None,
     ) -> None:
         """Instantiate a SchemaCreator.
 
         Args:
             generate_examples: Whether to generate examples if none are given.
             plugins: A list of plugins.
-            schemas: A mapping of namespaces to schemas - this mapping is used in the OA components section.
             prefer_alias: Whether to prefer the alias name for the schema.
+            schema_registry: A SchemaRegistry instance.
         """
         self.generate_examples = generate_examples
         self.plugins = plugins if plugins is not None else []
-        self.schemas = schemas if schemas is not None else {}
         self.prefer_alias = prefer_alias
+        self.schema_registry = schema_registry or SchemaRegistry()
+
+    @classmethod
+    def from_openapi_context(cls, context: OpenAPIContext, prefer_alias: bool = True, **kwargs: Any) -> Self:
+        kwargs.setdefault("generate_examples", context.openapi_config.create_examples)
+        kwargs.setdefault("plugins", context.plugins)
+        kwargs.setdefault("schema_registry", context.schema_registry)
+        return cls(**kwargs, prefer_alias=prefer_alias)
 
     @property
     def not_generating_examples(self) -> SchemaCreator:
         """Return a SchemaCreator with generate_examples set to False."""
         if not self.generate_examples:
             return self
-        new = copy(self)
-        new.generate_examples = False
-        return new
+        return type(self)(generate_examples=False, plugins=self.plugins, prefer_alias=False)
+
+    @staticmethod
+    def plugin_supports_field(plugin: OpenAPISchemaPluginProtocol, field: FieldDefinition) -> bool:
+        if predicate := getattr(plugin, "is_plugin_supported_field", None):
+            return predicate(field)  # type: ignore[no-any-return]
+        return plugin.is_plugin_supported_type(field.annotation)
 
     def get_plugin_for(self, field_definition: FieldDefinition) -> OpenAPISchemaPluginProtocol | None:
         return next(
-            (plugin for plugin in self.plugins if plugin.is_plugin_supported_type(field_definition.annotation)), None
+            (plugin for plugin in self.plugins if self.plugin_supports_field(plugin, field_definition)),
+            None,
         )
 
     def is_constrained_field(self, field_definition: FieldDefinition) -> bool:
@@ -278,7 +306,7 @@ class SchemaCreator:
         ) or any(
             p.is_constrained_field(field_definition)
             for p in self.plugins
-            if isinstance(p, OpenAPISchemaPlugin) and p.is_plugin_supported_type(field_definition.annotation)
+            if isinstance(p, OpenAPISchemaPlugin) and p.is_plugin_supported_field(field_definition)
         )
 
     def is_undefined(self, value: Any) -> bool:
@@ -315,23 +343,12 @@ class SchemaCreator:
             result = self.for_optional_field(field_definition)
         elif field_definition.is_union:
             result = self.for_union_field(field_definition)
-        elif field_definition.origin in (CursorPagination, OffsetPagination, ClassicPagination):
-            # NOTE: The check for whether the field_definition.annotation is a Pagination type
-            # has to come before the `is_dataclass_check` since the Pagination classes are dataclasses,
-            # but we want to handle them differently from how dataclasses are normally handled.
-            result = self.for_builtin_generics(field_definition)
         elif field_definition.is_type_var:
             result = self.for_typevar()
-        elif field_definition.is_subclass_of(Struct):
-            result = self.for_struct_class(field_definition)
-        elif field_definition.is_dataclass_type:
-            result = self.for_dataclass(field_definition)
-        elif field_definition.is_typeddict_type:
-            result = self.for_typed_dict(field_definition)
-        elif self.is_constrained_field(field_definition):
-            result = self.for_constrained_field(field_definition)
         elif field_definition.inner_types and not field_definition.is_generic:
             result = self.for_object_type(field_definition)
+        elif self.is_constrained_field(field_definition):
+            result = self.for_constrained_field(field_definition)
         else:
             result = create_schema_for_annotation(field_definition.annotation)
 
@@ -410,63 +427,11 @@ class SchemaCreator:
                 items=Schema(one_of=items) if len(items) > 1 else items[0],
             )
 
-        raise ImproperlyConfiguredException(
+        raise ImproperlyConfiguredException(  # pragma: no cover
             f"Parameter '{field_definition.name}' with type '{field_definition.annotation}' could not be mapped to an Open API type. "
             f"This can occur if a user-defined generic type is resolved as a parameter. If '{field_definition.name}' should "
             "not be documented as a parameter, annotate it using the `Dependency` function, e.g., "
             f"`{field_definition.name}: ... = Dependency(...)`."
-        )
-
-    def for_builtin_generics(self, field_definition: FieldDefinition) -> Schema:
-        """Handle builtin generic types.
-
-        Args:
-            field_definition: A signature field instance.
-
-        Returns:
-            A schema instance.
-        """
-        if field_definition.origin is ClassicPagination:
-            return Schema(
-                type=OpenAPIType.OBJECT,
-                properties={
-                    "items": Schema(
-                        type=OpenAPIType.ARRAY,
-                        items=self.for_field_definition(field_definition.inner_types[0]),
-                    ),
-                    "page_size": Schema(type=OpenAPIType.INTEGER, description="Number of items per page."),
-                    "current_page": Schema(type=OpenAPIType.INTEGER, description="Current page number."),
-                    "total_pages": Schema(type=OpenAPIType.INTEGER, description="Total number of pages."),
-                },
-            )
-
-        if field_definition.origin is OffsetPagination:
-            return Schema(
-                type=OpenAPIType.OBJECT,
-                properties={
-                    "items": Schema(
-                        type=OpenAPIType.ARRAY,
-                        items=self.for_field_definition(field_definition.inner_types[0]),
-                    ),
-                    "limit": Schema(type=OpenAPIType.INTEGER, description="Maximal number of items to send."),
-                    "offset": Schema(type=OpenAPIType.INTEGER, description="Offset from the beginning of the query."),
-                    "total": Schema(type=OpenAPIType.INTEGER, description="Total number of items."),
-                },
-            )
-
-        cursor_schema = self.not_generating_examples.for_field_definition(field_definition.inner_types[0])
-        cursor_schema.description = "Unique ID, designating the last identifier in the given data set. This value can be used to request the 'next' batch of records."
-
-        return Schema(
-            type=OpenAPIType.OBJECT,
-            properties={
-                "items": Schema(
-                    type=OpenAPIType.ARRAY,
-                    items=self.for_field_definition(field_definition=field_definition.inner_types[1]),
-                ),
-                "cursor": cursor_schema,
-                "results_per_page": Schema(type=OpenAPIType.INTEGER, description="Maximal number of items to send."),
-            },
         )
 
     def for_plugin(self, field_definition: FieldDefinition, plugin: OpenAPISchemaPluginProtocol) -> Schema | Reference:
@@ -479,8 +444,12 @@ class SchemaCreator:
         Returns:
             A schema instance.
         """
+        key = _get_normalized_schema_key(field_definition.annotation)
+        if (ref := self.schema_registry.get_reference_for_key(key)) is not None:
+            return ref
+
         schema = plugin.to_openapi_schema(field_definition=field_definition, schema_creator=self)
-        if isinstance(schema, SchemaDataContainer):
+        if isinstance(schema, SchemaDataContainer):  # pragma: no cover
             return self.for_field_definition(
                 FieldDefinition.from_kwarg(
                     annotation=schema.data_container,
@@ -490,98 +459,7 @@ class SchemaCreator:
                     kwarg_definition=field_definition.kwarg_definition,
                 )
             )
-        return schema  # pragma: no cover
-
-    def for_struct_class(self, field_definition: FieldDefinition) -> Schema:
-        """Create a schema object for a msgspec.Struct class.
-
-        Args:
-            field_definition: A field definition instance.
-
-        Returns:
-            A schema instance.
-        """
-
-        def _is_field_required(field: FieldInfo) -> bool:
-            return field.required or field.default_factory is Empty
-
-        unwrapped_annotation = field_definition.origin or field_definition.annotation
-        type_hints = field_definition.get_type_hints(include_extras=True, resolve_generics=True)
-        fields = msgspec_struct_fields(unwrapped_annotation)
-
-        return Schema(
-            required=sorted(
-                [
-                    field.encode_name
-                    for field in fields
-                    if _is_field_required(field=field) and not is_optional_union(type_hints[field.name])
-                ]
-            ),
-            properties={
-                field.encode_name: self.for_field_definition(
-                    FieldDefinition.from_kwarg(type_hints[field.name], field.encode_name)
-                )
-                for field in fields
-            },
-            type=OpenAPIType.OBJECT,
-            title=_get_type_schema_name(field_definition),
-        )
-
-    # noinspection PyDataclass
-    def for_dataclass(self, field_definition: FieldDefinition) -> Schema:
-        """Create a schema object for a dataclass class.
-
-        Args:
-            field_definition: A field definition instance.
-
-        Returns:
-            A schema instance.
-        """
-
-        unwrapped_annotation = field_definition.origin or field_definition.annotation
-        type_hints = field_definition.get_type_hints(include_extras=True, resolve_generics=True)
-        return Schema(
-            required=sorted(
-                [
-                    field.name
-                    for field in fields(unwrapped_annotation)
-                    if (
-                        field.default is MISSING
-                        and field.default_factory is MISSING
-                        and not is_optional_union(type_hints[field.name])
-                    )
-                ]
-            ),
-            properties={k: self.for_field_definition(FieldDefinition.from_kwarg(v, k)) for k, v in type_hints.items()},
-            type=OpenAPIType.OBJECT,
-            title=_get_type_schema_name(field_definition),
-        )
-
-    # noinspection PyTypedDict
-    def for_typed_dict(self, field_definition: FieldDefinition) -> Schema:
-        """Create a schema object for a typeddict.
-
-        Args:
-            field_definition: A field definition instance.
-
-        Returns:
-            A schema instance.
-        """
-
-        unwrapped_annotation = field_definition.origin or field_definition.annotation
-        type_hints = field_definition.get_type_hints(include_extras=True, resolve_generics=True)
-
-        return Schema(
-            required=sorted(getattr(unwrapped_annotation, "__required_keys__", [])),
-            properties={
-                k: self.for_field_definition(FieldDefinition.from_kwarg(v, k))
-                for k, v in {
-                    k: get_args(v)[0] if get_origin(v) in (Required, NotRequired) else v for k, v in type_hints.items()
-                }.items()
-            },
-            type=OpenAPIType.OBJECT,
-            title=_get_type_schema_name(field_definition),
-        )
+        return schema
 
     def for_constrained_field(self, field: FieldDefinition) -> Schema:
         """Create Schema for Pydantic Constrained fields (created using constr(), conint() and so forth, or by subclassing
@@ -644,19 +522,57 @@ class SchemaCreator:
                     if schema_key == "examples":
                         value = get_formatted_examples(field, cast("list[Example]", value))
 
-                    setattr(schema, schema_key, value)
+                    # we only want to transfer values from the `KwargDefinition` to `Schema` if the schema object
+                    # doesn't already have a value for that property. For example, if a field is a constrained date,
+                    # by this point, we have already set the `exclusive_minimum` and/or `exclusive_maximum` fields
+                    # to floating point timestamp values on the schema object. However, the original `date` objects
+                    # that define those constraints on `KwargDefinition` are still `date` objects. We don't want to
+                    # overwrite them here.
+                    if getattr(schema, schema_key, None) is None:
+                        setattr(schema, schema_key, value)
 
         if not schema.examples and self.generate_examples:
             from litestar._openapi.schema_generation.examples import create_examples_for_field
 
             schema.examples = get_formatted_examples(field, create_examples_for_field(field))
 
-        if schema.title and schema.type in (OpenAPIType.OBJECT, OpenAPIType.ARRAY):
-            class_name = _get_normalized_schema_key(str(field.annotation))
+        if schema.title and schema.type == OpenAPIType.OBJECT:
+            key = _get_normalized_schema_key(field.annotation)
+            return self.schema_registry.get_reference_for_key(key) or schema
+        return schema
 
-            if class_name in self.schemas:
-                return Reference(ref=f"#/components/schemas/{class_name}", description=schema.description)
+    def create_component_schema(
+        self,
+        type_: FieldDefinition,
+        /,
+        required: list[str],
+        property_fields: Mapping[str, FieldDefinition],
+        openapi_type: OpenAPIType = OpenAPIType.OBJECT,
+        title: str | None = None,
+        examples: Mapping[str, Example] | None = None,
+    ) -> Schema:
+        """Create a schema for the components/schemas section of the OpenAPI spec.
 
-            self.schemas[class_name] = schema
-            return Reference(ref=f"#/components/schemas/{class_name}")
+        These are schemas that can be referenced by other schemas in the document, including self references.
+
+        To support self referencing schemas, the schema is added to the registry before schemas for its properties
+        are created. This allows the schema to be referenced by its properties.
+
+        Args:
+            type_: ``FieldDefinition`` instance of the type to create a schema for.
+            required: A list of required fields.
+            property_fields: Mapping of name to ``FieldDefinition`` instances for the properties of the schema.
+            openapi_type: The OpenAPI type, defaults to ``OpenAPIType.OBJECT``.
+            title: The schema title, generated if not provided.
+            examples: A mapping of example names to ``Example`` instances, not required.
+
+        Returns:
+            A schema instance.
+        """
+        schema = self.schema_registry.get_schema_for_key(_get_normalized_schema_key(type_.annotation))
+        schema.title = title or _get_type_schema_name(type_)
+        schema.required = required
+        schema.type = openapi_type
+        schema.properties = {k: self.for_field_definition(v) for k, v in property_fields.items()}
+        schema.examples = examples
         return schema

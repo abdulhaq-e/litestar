@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, Generic, List, Optional, Sequence, TypeVar, cast
+from types import ModuleType
+from typing import TYPE_CHECKING, Callable, Dict, Generic, List, Optional, Sequence, TypeVar, cast
 from unittest.mock import MagicMock
 from uuid import UUID
 
@@ -91,6 +92,42 @@ def test_renamed_field(use_experimental_dto_backend: bool) -> None:
         assert response.json() == {"baz": "hello"}
 
 
+def test_renamed_field_nested(use_experimental_dto_backend: bool, create_module: Callable[[str], ModuleType]) -> None:
+    # https://github.com/litestar-org/litestar/issues/2721
+    module = create_module(
+        """
+from dataclasses import dataclass
+from typing import List
+
+@dataclass
+class Bar:
+    id: str
+
+@dataclass
+class Foo:
+    id: str
+    bar: Bar
+    bars: List[Bar]
+"""
+    )
+
+    Foo = module.Foo
+
+    config = DTOConfig(
+        rename_fields={"id": "foo_id", "bar.id": "bar_id", "bars.0.id": "bars_id"},
+        experimental_codegen_backend=use_experimental_dto_backend,
+    )
+    dto = DataclassDTO[Annotated[Foo, config]]  # type: ignore[valid-type]
+
+    @post(dto=dto, signature_types=[Foo])
+    def handler(data: Foo) -> Foo:  # type: ignore[valid-type]
+        return data
+
+    with create_test_client(route_handlers=[handler]) as client:
+        response = client.post("/", json={"foo_id": "1", "bar": {"bar_id": "2"}, "bars": [{"bars_id": "3"}]})
+        assert response.json() == {"foo_id": "1", "bar": {"bar_id": "2"}, "bars": [{"bars_id": "3"}]}
+
+
 @dataclass
 class Spam:
     main_id: str = "spam-id"
@@ -113,6 +150,12 @@ class Fzop:
         ("camel", Fzop(spam_bar="star"), ["spamBar"], {"spamBar": "star"}),
         ("pascal", Fzop(spam_bar="star"), ["SpamBar"], {"SpamBar": "star"}),
         ("camel", Fzop(spam_model=Spam()), ["spamModel"], {"spamModel": {"mainId": "spam-id"}}),
+        (
+            "kebab",
+            Fzop(spam_bar="star", spam_model=Spam()),
+            ["spam-bar", "spam-model"],
+            {"spam-bar": "star", "spam-model": {"main-id": "spam-id"}},
+        ),
     ],
 )
 def test_fields_alias_generator(
@@ -768,3 +811,40 @@ def test_dto_with_msgspec_with_bound_generic_and_inherited_models(use_experiment
             headers={"Content-Type": "application/json; charset=utf-8"},
         )
         assert msgspec.json.decode(received.content, type=Superuser) == data
+
+
+def test_dto_returning_mapping(use_experimental_dto_backend: bool) -> None:
+    @dataclass
+    class Lexeme:
+        id: int
+        name: str
+
+    class LexemeDTO(DataclassDTO[Lexeme]):
+        config = DTOConfig(exclude={"id"}, experimental_codegen_backend=use_experimental_dto_backend)
+
+    @get(return_dto=LexemeDTO, signature_types=[Lexeme])
+    async def get_definition() -> Dict[str, Lexeme]:
+        return {"hello": Lexeme(id=1, name="hello"), "world": Lexeme(id=2, name="world")}
+
+    with create_test_client(route_handlers=[get_definition]) as client:
+        response = client.get("/")
+        assert response.json() == {"hello": {"name": "hello"}, "world": {"name": "world"}}
+
+
+def test_data_dto_with_default() -> None:
+    """A POST request without Body should inject the default value.
+
+    https://github.com/litestar-org/litestar/issues/2902
+    """
+
+    @dataclass
+    class Foo:
+        foo: str
+
+    @post(path="/", dto=DataclassDTO[Foo], signature_types=[Foo])
+    def test(data: Optional[Foo] = None) -> dict:
+        return {"foo": data}
+
+    with create_test_client([test]) as client:
+        response = client.post("/")
+        assert response.json() == {"foo": None}

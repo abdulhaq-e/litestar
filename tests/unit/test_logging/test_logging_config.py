@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from litestar import Request, get
+from litestar.exceptions import ImproperlyConfiguredException
 from litestar.logging.config import LoggingConfig, _get_default_handlers, default_handlers, default_picologging_handlers
 from litestar.logging.picologging import QueueListenerHandler as PicologgingQueueListenerHandler
 from litestar.logging.standard import QueueListenerHandler as StandardQueueListenerHandler
@@ -65,14 +66,6 @@ def test_dictconfig_startup(dict_config_class: str, handlers: Any) -> None:
             assert dict_config_mock.called
 
 
-LoggingConfig(
-    handlers=default_handlers,
-    loggers={
-        "test_logger": {"level": "INFO", "handlers": ["queue_listener"], "propagate": True},
-    },
-).configure()
-
-
 def test_standard_queue_listener_logger(caplog: "LogCaptureFixture") -> None:
     with caplog.at_level("INFO", logger="test_logger"):
         logger = logging.getLogger("test_logger")
@@ -88,6 +81,15 @@ def test_picologging_dictconfig_when_disabled(dict_config_mock: Mock) -> None:
     test_logger = LoggingConfig(loggers={"app": {"level": "INFO", "handlers": ["console"]}}, handlers=default_handlers)
     with create_test_client([], on_startup=[test_logger.configure], logging_config=None):
         assert not dict_config_mock.called
+
+
+def test_get_logger_without_logging_config() -> None:
+    with create_test_client(logging_config=None) as client:
+        with pytest.raises(
+            ImproperlyConfiguredException,
+            match="cannot call '.get_logger' without passing 'logging_config' to the Litestar constructor first",
+        ):
+            client.app.get_logger()
 
 
 def test_get_default_logger() -> None:
@@ -139,7 +141,7 @@ def test_root_logger(handlers: Any, listener: Any) -> None:
     logging_config = LoggingConfig(handlers=handlers)
     get_logger = logging_config.configure()
     root_logger = get_logger()
-    isinstance(root_logger.handlers[0], listener)  # type: ignore
+    assert isinstance(root_logger.handlers[0], listener)  # type: ignore
 
 
 @pytest.mark.parametrize(
@@ -161,4 +163,4 @@ def test_customizing_handler(handlers: Any, listener: Any, monkeypatch: pytest.M
     logging_config = LoggingConfig(handlers=handlers)
     get_logger = logging_config.configure()
     root_logger = get_logger()
-    isinstance(root_logger.handlers[0], listener)  # type: ignore
+    assert isinstance(root_logger.handlers[0], listener)  # type: ignore

@@ -56,7 +56,7 @@ maintainers = [
 name = "litestar"
 readme = "README.md"
 requires-python = ">=3.8,<4.0"
-version = "2.3.2"
+version = "2.4.5"
 
 [project.urls]
 Blog = "https://blog.litestar.dev"
@@ -126,7 +126,6 @@ linting = [
   "mypy",
   "pre-commit",
   "slotscheck",
-  "sourcery",
   "pyright",
   "blacken-docs",
   "asyncpg-stubs",
@@ -211,6 +210,8 @@ filterwarnings = [
   "ignore:The `parse_obj` method is deprecated:DeprecationWarning:",
   "ignore:The `json` method is deprecated:DeprecationWarning:",
   "ignore:Extra keyword arguments on `Field` is deprecated:DeprecationWarning:pydantic*",
+  "ignore: 'RichMultiCommand':DeprecationWarning::"  # this is coming from rich_click itself, nothing we can do about
+                                                     # that for now
 ]
 markers = [
   "sqlalchemy_integration: SQLAlchemy integration tests",
@@ -262,6 +263,7 @@ warn_untyped_fields = true
 
 [tool.pyright]
 disableBytesTypePromotions = true
+reportUnnecessaryTypeIgnoreComments = true
 exclude = [
   "test_apps",
   "tools",

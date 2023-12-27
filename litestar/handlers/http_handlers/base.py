@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, AnyStr, Mapping, TypedDict, cast
+from typing import TYPE_CHECKING, AnyStr, Mapping, Sequence, TypedDict, cast
 
 from litestar._layers.utils import narrow_response_cookies, narrow_response_headers
 from litestar.datastructures.cookie import Cookie
@@ -17,6 +17,7 @@ from litestar.handlers.http_handlers._utils import (
     create_generic_asgi_response_handler,
     create_response_handler,
     get_default_status_code,
+    is_empty_response_annotation,
     normalize_http_method,
 )
 from litestar.openapi.spec import Operation
@@ -41,7 +42,6 @@ from litestar.types import (
     ResponseType,
     TypeEncodersMap,
 )
-from litestar.types.builtin_types import NoneType
 from litestar.utils import ensure_async_callable
 from litestar.utils.predicates import is_async_callable
 from litestar.utils.warnings import (
@@ -50,7 +50,7 @@ from litestar.utils.warnings import (
 )
 
 if TYPE_CHECKING:
-    from typing import Any, Awaitable, Callable, Sequence
+    from typing import Any, Awaitable, Callable
 
     from litestar.app import Litestar
     from litestar.background_tasks import BackgroundTask, BackgroundTasks
@@ -83,6 +83,8 @@ class HTTPRouteHandler(BaseRouteHandler):
         "_resolved_before_request",
         "_response_handler_mapping",
         "_resolved_include_in_schema",
+        "_resolved_tags",
+        "_resolved_security",
         "after_request",
         "after_response",
         "background",
@@ -288,6 +290,8 @@ class HTTPRouteHandler(BaseRouteHandler):
             "response_type_handler": Empty,
         }
         self._resolved_include_in_schema: bool | EmptyType = Empty
+        self._resolved_security: list[SecurityRequirement] | EmptyType = Empty
+        self._resolved_tags: list[str] | EmptyType = Empty
 
     def __call__(self, fn: AnyCallable) -> HTTPRouteHandler:
         """Replace a function with itself."""
@@ -414,6 +418,40 @@ class HTTPRouteHandler(BaseRouteHandler):
 
         return self._resolved_include_in_schema
 
+    def resolve_security(self) -> list[SecurityRequirement]:
+        """Resolve the security property by starting from the route handler and moving up.
+
+        Security requirements are additive, so the security requirements of the route handler are the sum of all
+        security requirements of the ownership layers.
+
+        Returns:
+            list[SecurityRequirement]: The resolved security property.
+        """
+        if self._resolved_security is Empty:
+            self._resolved_security = []
+            for layer in self.ownership_layers:
+                if isinstance(layer.security, Sequence):
+                    self._resolved_security.extend(layer.security)
+
+        return self._resolved_security
+
+    def resolve_tags(self) -> list[str]:
+        """Resolve the tags property by starting from the route handler and moving up.
+
+        Tags are additive, so the tags of the route handler are the sum of all tags of the ownership layers.
+
+        Returns:
+            list[str]: A sorted list of unique tags.
+        """
+        if self._resolved_tags is Empty:
+            tag_set = set()
+            for layer in self.ownership_layers:
+                for tag in layer.tags or []:
+                    tag_set.add(tag)
+            self._resolved_tags = sorted(tag_set)
+
+        return self._resolved_tags
+
     def get_response_handler(self, is_response_type_data: bool = False) -> Callable[[Any], Awaitable[ASGIApp]]:
         """Resolve the response_handler function for the route handler.
 
@@ -522,7 +560,7 @@ class HTTPRouteHandler(BaseRouteHandler):
 
         if (
             self.status_code < 200 or self.status_code in {HTTP_204_NO_CONTENT, HTTP_304_NOT_MODIFIED}
-        ) and not return_type.is_subclass_of(NoneType):
+        ) and not is_empty_response_annotation(return_type):
             raise ImproperlyConfiguredException(
                 "A status code 204, 304 or in the range below 200 does not support a response body. "
                 "If the function should return a value, change the route handler status code to an appropriate value.",

@@ -10,6 +10,8 @@ from litestar.cli._utils import LitestarEnv, _path_to_dotted_path
 
 from .conftest import CreateAppFileFixture
 
+pytestmark = pytest.mark.xdist_group("cli_autodiscovery")
+
 
 @pytest.mark.parametrize("env_name,attr_name", [("LITESTAR_DEBUG", "debug"), ("LITESTAR_RELOAD", "reload")])
 @pytest.mark.parametrize(
@@ -75,6 +77,8 @@ def test_env_from_env_autodiscover_from_files(
     dotted_path = _path_to_dotted_path(tmp_file_path.relative_to(Path.cwd()))
 
     assert isinstance(env.app, Litestar)
+
+    print("parent directory content: %s", list(tmp_file_path.parent.iterdir()))  # noqa: T201
     assert env.app_path == f"{dotted_path}:{app_file_app_name}"
 
 

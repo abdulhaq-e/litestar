@@ -128,8 +128,45 @@ and
     * ``http://localhost:8000/schema`` (for `ReDoc <https://redocly.com/redoc>`_),
     * ``http://localhost:8000/schema/swagger`` (for `Swagger UI <https://swagger.io/>`_),
     * ``http://localhost:8000/schema/elements`` (for `Stoplight Elements <https://stoplight.io/open-source/elements/>`_)
+    * ``http://localhost:8000/schema/rapidoc`` (for `RapiDoc <https://rapidocweb.com/>`_)
 
 You can check out a more in-depth tutorial in the :doc:`/tutorials/todo-app/index` section!
+
+Sponsors
+--------
+
+Litestar is a community-driven open-source initiative that thrives on the generous contributions of our sponsors,
+enabling us to pursue innovative developments.
+
+A huge thank you to our current sponsors:
+
+.. raw:: html
+
+    <div style="display: flex; justify-content: center; align-items: center; gap: 8px;">
+      <div>
+        <a href="https://scalar.com">
+          <img src="https://raw.githubusercontent.com/litestar-org/branding/main/assets/sponsors/scalar.svg" alt="Scalar.com" style="border-radius: 10px; width: auto; max-height: 150px;"/>
+        </a>
+        <p style="text-align: center;">Scalar.com</p>
+      </div>
+      <div>
+        <a href="https://telemetrysports.com/">
+          <img src="https://raw.githubusercontent.com/litestar-org/branding/main/assets/sponsors/telemetry-sports/unofficial-telemetry-whitebg.svg" alt="Telemetry Sports" style="border-radius: 10px; width: auto; max-height: 150px;"/>
+        </a>
+        <p style="text-align: center;">Telemetry Sports</p>
+      </div>
+    </div>
+
+We invite organizations and individuals to join our sponsorship program.
+By becoming a sponsor on platforms like `GitHub <sponsor-github_>`_
+and `Open Collective <sponsor-oc_>`_, you can play a pivotal role in our project's growth.
+
+Additionally, we engage in pledge-based sponsorship opportunities through `Polar <sponsor-polar_>`_.
+
+
+.. _sponsor-github: https://github.com/sponsors/litestar-org
+.. _sponsor-oc: https://opencollective.com/litestar
+.. _sponsor-polar: https://polar.sh/litestar-org
 
 Expanded Example
 ----------------
@@ -287,12 +324,13 @@ Example Applications
 --------------------
 
 
-* `litestar-pg-redis-docker <https://github.com/litestar-org/starlite-pg-redis-docker>`_ : In addition to Litestar, this
+* `litestar-pg-redis-docker <https://github.com/litestar-org/litestar-pg-redis-docker>`_ : In addition to Litestar, this
   demonstrates a pattern of application modularity, SQLAlchemy 2.0 ORM, Redis cache connectivity, and more. Like all
   Litestar projects, this application is open to contributions, big and small.
-* `litestar-fullstack <https://github.com/litestar-org/litestar-fullstack>`_ : A reference application that features a
-  Litestar app configured with best practices, SQLAlchemy 2.0 and SAQ, a frontend integrated with Vitejs and Jinja2
-  templates. Docker, and more.
+* `litestar-fullstack <https://github.com/litestar-org/litestar-fullstack>`_ : A fully-capable, production-ready fullstack
+  Litestar web application configured with best practices. It includes SQLAlchemy 2.0, VueJS, `Vite <https://vitejs.dev/>`_,
+  `SAQ job queue <https://saq-py.readthedocs.io/en/latest/>`_, ``Jinja`` templates and more.
+  `Read more <https://litestar-org.github.io/litestar-fullstack/latest/>`_.
 * `litestar-hello-world <https://github.com/litestar-org/litestar-hello-world>`_: A bare-minimum application setup.
   Great for testing and POC work.
 

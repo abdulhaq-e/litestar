@@ -9,14 +9,13 @@ from litestar._parsers import (
     parse_query_string,
     parse_url_encoded_form_data,
 )
-from litestar.constants import SCOPE_STATE_PARSED_QUERY_KEY
 from litestar.datastructures import Headers
 from litestar.datastructures.upload_file import UploadFile
 from litestar.enums import ParamType, RequestEncodingType
 from litestar.exceptions import ValidationException
 from litestar.params import BodyKwarg
 from litestar.types import Empty
-from litestar.utils.scope import set_litestar_scope_state
+from litestar.utils.scope.state import ScopeState
 
 if TYPE_CHECKING:
     from litestar._kwargs import KwargsModel
@@ -152,7 +151,7 @@ def parse_connection_query_params(connection: ASGIConnection, kwargs_model: Kwar
         if connection._parsed_query is not Empty
         else parse_query_string(connection.scope.get("query_string", b""))
     )
-    set_litestar_scope_state(connection.scope, SCOPE_STATE_PARSED_QUERY_KEY, parsed_query)
+    ScopeState.from_scope(connection.scope).parsed_query = parsed_query
     return create_query_default_dict(
         parsed_query=parsed_query,
         sequence_query_parameter_names=kwargs_model.sequence_query_parameter_names,
@@ -296,6 +295,8 @@ async def json_extractor(connection: Request[Any, Any, Any]) -> Any:
     Returns:
         The JSON value.
     """
+    if not await connection.body():
+        return Empty
     return await connection.json()
 
 
@@ -311,6 +312,8 @@ async def msgpack_extractor(connection: Request[Any, Any, Any]) -> Any:
     Returns:
         The MessagePack value.
     """
+    if not await connection.body():
+        return Empty
     return await connection.msgpack()
 
 
@@ -455,7 +458,8 @@ def create_dto_extractor(
     """
 
     async def dto_extractor(connection: Request[Any, Any, Any]) -> Any:
-        body = await connection.body()
+        if not (body := await connection.body()):
+            return Empty
         return data_dto(connection).decode_bytes(body)
 
     return dto_extractor  # type:ignore[return-value]
