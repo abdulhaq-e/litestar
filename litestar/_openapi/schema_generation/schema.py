@@ -117,7 +117,7 @@ TYPE_MAP: dict[type[Any] | None | Any, Schema] = {
     Sequence: Schema(type=OpenAPIType.ARRAY),
     Set: Schema(type=OpenAPIType.ARRAY),
     Tuple: Schema(type=OpenAPIType.ARRAY),
-    UUID: Schema(type=OpenAPIType.STRING, format=OpenAPIFormat.UUID, description="Any UUID string"),
+    UUID: Schema(type=OpenAPIType.STRING, format=OpenAPIFormat.UUID),
     bool: Schema(type=OpenAPIType.BOOLEAN),
     bytearray: Schema(type=OpenAPIType.STRING),
     bytes: Schema(type=OpenAPIType.STRING),
@@ -352,7 +352,8 @@ class SchemaCreator:
 
         return self.process_schema_result(field_definition, result) if isinstance(result, Schema) else result
 
-    def for_upload_file(self, field_definition: FieldDefinition) -> Schema:
+    @staticmethod
+    def for_upload_file(field_definition: FieldDefinition) -> Schema:
         """Create schema for UploadFile.
 
         Args:
@@ -386,7 +387,8 @@ class SchemaCreator:
 
         return schema
 
-    def for_typevar(self) -> Schema:
+    @staticmethod
+    def for_typevar() -> Schema:
         """Create a schema for a TypeVar.
 
         Returns:

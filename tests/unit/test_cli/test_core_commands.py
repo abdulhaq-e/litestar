@@ -40,16 +40,19 @@ def mock_show_app_info(mocker: MockerFixture) -> MagicMock:
 @pytest.mark.parametrize("custom_app_file,", [Path("my_app.py"), None])
 @pytest.mark.parametrize("app_dir", ["custom_subfolder", None])
 @pytest.mark.parametrize(
-    "reload, reload_dir, web_concurrency",
+    "reload, reload_dir, reload_include, reload_exclude, web_concurrency",
     [
-        (None, None, None),
-        (True, None, None),
-        (False, None, None),
-        (True, [".", "../somewhere_else"], None),
-        (False, [".", "../somewhere_else"], None),
-        (None, None, 2),
-        (True, None, 2),
-        (False, None, 2),
+        (None, None, None, None, None),
+        (True, None, None, None, None),
+        (False, None, None, None, None),
+        (True, [".", "../somewhere_else"], None, None, None),
+        (False, [".", "../somewhere_else"], None, None, None),
+        (True, None, ["*.rst", "*.yml"], None, None),
+        (False, None, None, ["*.py"], None),
+        (False, None, ["*.yml", "*.rst"], None, None),
+        (None, None, None, None, 2),
+        (True, None, None, None, 2),
+        (False, None, None, None, 2),
     ],
 )
 def test_run_command(
@@ -64,6 +67,8 @@ def test_run_command(
     web_concurrency: Optional[int],
     app_dir: Optional[str],
     reload_dir: Optional[List[str]],
+    reload_include: Optional[List[str]],
+    reload_exclude: Optional[List[str]],
     custom_app_file: Optional[Path],
     create_app_file: CreateAppFileFixture,
     set_in_env: bool,
@@ -131,6 +136,18 @@ def test_run_command(
         else:
             args.extend([f"--reload-dir={s}" for s in reload_dir])
 
+    if reload_include is not None:
+        if set_in_env:
+            monkeypatch.setenv("LITESTAR_RELOAD_INCLUDES", ",".join(reload_include))
+        else:
+            args.extend([f"--reload-include={s}" for s in reload_include])
+
+    if reload_exclude is not None:
+        if set_in_env:
+            monkeypatch.setenv("LITESTAR_RELOAD_EXCLUDES", ",".join(reload_exclude))
+        else:
+            args.extend([f"--reload-exclude={s}" for s in reload_exclude])
+
     path = create_app_file(custom_app_file or "app.py", directory=app_dir)
 
     result = runner.invoke(cli_command, args)
@@ -138,7 +155,7 @@ def test_run_command(
     assert result.exception is None
     assert result.exit_code == 0
 
-    if reload or reload_dir or web_concurrency > 1:
+    if reload or reload_dir or reload_include or reload_exclude or web_concurrency > 1:
         expected_args = [
             sys.executable,
             "-m",
@@ -151,12 +168,16 @@ def test_run_command(
             expected_args.append(f"--fd={fd}")
         if uds is not None:
             expected_args.append(f"--uds={uds}")
-        if reload or reload_dir:
+        if reload or reload_dir or reload_include or reload_exclude:
             expected_args.append("--reload")
         if web_concurrency:
             expected_args.append(f"--workers={web_concurrency}")
         if reload_dir:
             expected_args.extend([f"--reload-dir={s}" for s in reload_dir])
+        if reload_include:
+            expected_args.extend([f"--reload-include={s}" for s in reload_include])
+        if reload_exclude:
+            expected_args.extend([f"--reload-exclude={s}" for s in reload_exclude])
         mock_subprocess_run.assert_called_once()
         assert sorted(mock_subprocess_run.call_args_list[0].args[0]) == sorted(expected_args)
     else:
@@ -327,12 +348,24 @@ def test_run_command_with_server_lifespan_plugin(
 
 
 @pytest.mark.parametrize(
-    "app_content, schema_enabled, exclude_pattern_list",
+    "app_content, schema_enabled, exclude_pattern_list, expected_result_routes_count",
     [
-        (APP_FILE_CONTENT_ROUTES_EXAMPLE, False, ()),
-        (APP_FILE_CONTENT_ROUTES_EXAMPLE, False, ("/foo", "/destroy/.*", "/java", "/haskell")),
-        (APP_FILE_CONTENT_ROUTES_EXAMPLE, True, ()),
-        (APP_FILE_CONTENT_ROUTES_EXAMPLE, True, ("/foo", "/destroy/.*", "/java", "/haskell")),
+        pytest.param(APP_FILE_CONTENT_ROUTES_EXAMPLE, False, (), 3, id="schema-enabled_no-exclude"),
+        pytest.param(
+            APP_FILE_CONTENT_ROUTES_EXAMPLE,
+            False,
+            ("/foo", "/destroy/.*", "/java", "/haskell"),
+            2,
+            id="schema-enabled_exclude",
+        ),
+        pytest.param(APP_FILE_CONTENT_ROUTES_EXAMPLE, True, (), 12, id="schema-disabled_no-exclude"),
+        pytest.param(
+            APP_FILE_CONTENT_ROUTES_EXAMPLE,
+            True,
+            ("/foo", "/destroy/.*", "/java", "/haskell"),
+            11,
+            id="schema-disabled_exclude",
+        ),
     ],
 )
 @pytest.mark.xdist_group("cli_autodiscovery")
@@ -342,6 +375,7 @@ def test_routes_command_options(
     schema_enabled: bool,
     exclude_pattern_list: Tuple[str, ...],
     create_app_file: CreateAppFileFixture,
+    expected_result_routes_count: int,
 ) -> None:
     create_app_file("app.py", content=app_content)
 
@@ -356,23 +390,15 @@ def test_routes_command_options(
     assert result.exception is None
     assert result.exit_code == 0
 
-    result_routes = re.findall(r"\/(?:\/|[a-z]|\.|-|[0-9])* \(HTTP\)", result.output)
+    result_routes = [line for line in result.output.splitlines() if "(HTTP)" in line]
     for route in result_routes:
-        route_words = route.split(" ")
-        root_dir = route_words[0]
+        root_dir = route.split(" ")[0]
         if not schema_enabled:
             assert root_dir != "/api-docs"
 
         assert root_dir not in exclude_pattern_list
-    result_routes_len = len(result_routes)
-    if schema_enabled and exclude_pattern_list:
-        assert result_routes_len == 11
-    elif schema_enabled and not exclude_pattern_list:
-        assert result_routes_len == 12
-    elif not schema_enabled and exclude_pattern_list:
-        assert result_routes_len == 2
-    elif not schema_enabled and not exclude_pattern_list:
-        assert result_routes_len == 3
+
+    assert expected_result_routes_count == len(result_routes)
 
 
 def test_remove_default_schema_routes() -> None:

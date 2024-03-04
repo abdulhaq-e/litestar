@@ -8,11 +8,12 @@ import sys
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from typing import TYPE_CHECKING, Any, Iterator
 
+import click
+from click import Context, command, option
 from rich.tree import Tree
 
 from litestar.app import DEFAULT_OPENAPI_CONFIG
 from litestar.cli._utils import (
-    RICH_CLICK_INSTALLED,
     UVICORN_INSTALLED,
     LitestarEnv,
     console,
@@ -22,18 +23,8 @@ from litestar.cli._utils import (
     show_app_info,
     validate_ssl_file_paths,
 )
-from litestar.routes import HTTPRoute, WebSocketRoute
+from litestar.routes import ASGIRoute, HTTPRoute, WebSocketRoute
 from litestar.utils.helpers import unwrap_partial
-
-if UVICORN_INSTALLED:
-    import uvicorn
-
-if TYPE_CHECKING or not RICH_CLICK_INSTALLED:  # pragma: no cover
-    import click
-    from click import Context, command, option
-else:
-    import rich_click as click
-    from rich_click import Context, command, option
 
 __all__ = ("info_command", "routes_command", "run_command")
 
@@ -78,6 +69,8 @@ def _run_uvicorn_in_subprocess(
     workers: int | None,
     reload: bool,
     reload_dirs: tuple[str, ...] | None,
+    reload_include: tuple[str, ...] | None,
+    reload_exclude: tuple[str, ...] | None,
     fd: int | None,
     uds: str | None,
     certfile_path: str | None,
@@ -96,6 +89,10 @@ def _run_uvicorn_in_subprocess(
         process_args["uds"] = uds
     if reload_dirs:
         process_args["reload-dir"] = reload_dirs
+    if reload_include:
+        process_args["reload-include"] = reload_include
+    if reload_exclude:
+        process_args["reload-exclude"] = reload_exclude
     if certfile_path is not None:
         process_args["ssl-certfile"] = certfile_path
     if keyfile_path is not None:
@@ -125,6 +122,12 @@ def info_command(app: Litestar) -> None:
 @command(name="run")
 @option("-r", "--reload", help="Reload server on changes", default=False, is_flag=True)
 @option("-R", "--reload-dir", help="Directories to watch for file changes", multiple=True)
+@option(
+    "-I", "--reload-include", help="Glob patterns for files to include when watching for file changes", multiple=True
+)
+@option(
+    "-E", "--reload-exclude", help="Glob patterns for files to exclude when watching for file changes", multiple=True
+)
 @option("-p", "--port", help="Serve under this port", type=int, default=8000, show_default=True)
 @option(
     "-W",
@@ -164,6 +167,8 @@ def run_command(
     uds: str | None,
     debug: bool,
     reload_dir: tuple[str, ...],
+    reload_include: tuple[str, ...],
+    reload_exclude: tuple[str, ...],
     pdb: bool,
     ssl_certfile: str | None,
     ssl_keyfile: str | None,
@@ -203,12 +208,14 @@ def run_command(
     app = env.app
 
     reload_dirs = env.reload_dirs or reload_dir
+    reload_include = env.reload_include or reload_include
+    reload_exclude = env.reload_exclude or reload_exclude
 
     host = env.host or host
     port = env.port if env.port is not None else port
     fd = env.fd if env.fd is not None else fd
     uds = env.uds or uds
-    reload = env.reload or reload or bool(reload_dirs)
+    reload = env.reload or reload or bool(reload_dirs) or bool(reload_include) or bool(reload_exclude)
     workers = env.web_concurrency or wc
 
     ssl_certfile = ssl_certfile or env.certfile_path
@@ -226,6 +233,8 @@ def run_command(
     show_app_info(app)
     with _server_lifespan(app):
         if workers == 1 and not reload:
+            import uvicorn
+
             # A guard statement at the beginning of this function prevents uvicorn from being unbound
             # See "reportUnboundVariable in:
             # https://microsoft.github.io/pyright/#/configuration?id=type-check-diagnostics-settings
@@ -255,6 +264,8 @@ def run_command(
                 workers=workers,
                 reload=reload,
                 reload_dirs=reload_dirs,
+                reload_include=reload_include,
+                reload_exclude=reload_exclude,
                 fd=fd,
                 uds=uds,
                 certfile_path=certfile_path,
@@ -268,7 +279,6 @@ def run_command(
 def routes_command(app: Litestar, exclude: tuple[str, ...], schema: bool) -> None:  # pragma: no cover
     """Display information about the application's routes."""
 
-    tree = Tree("", hide_root=True)
     sorted_routes = sorted(app.routes, key=lambda r: r.path)
     if not schema:
         openapi_config = app.openapi_config or DEFAULT_OPENAPI_CONFIG
@@ -276,30 +286,50 @@ def routes_command(app: Litestar, exclude: tuple[str, ...], schema: bool) -> Non
     if exclude is not None:
         sorted_routes = remove_routes_with_patterns(sorted_routes, exclude)
 
-    for route in sorted_routes:
-        if isinstance(route, HTTPRoute):
-            branch = tree.add(f"[green]{route.path}[/green] (HTTP)")
-            for handler in route.route_handlers:
-                handler_info = [
-                    f"[blue]{handler.name or handler.handler_name}[/blue]",
-                ]
+    console.print(_RouteTree(sorted_routes))
 
-                if inspect.iscoroutinefunction(unwrap_partial(handler.fn)):
-                    handler_info.append("[magenta]async[/magenta]")
-                else:
-                    handler_info.append("[yellow]sync[/yellow]")
 
-                handler_info.append(f'[cyan]{", ".join(sorted(handler.http_methods))}[/cyan]')
+class _RouteTree(Tree):
+    def __init__(self, routes: list[HTTPRoute | ASGIRoute | WebSocketRoute]) -> None:
+        super().__init__("", hide_root=True)
+        self._routes = routes
+        self._build()
 
-                if len(handler.paths) > 1:
-                    for path in handler.paths:
-                        branch.add(" ".join([f"[green]{path}[green]", *handler_info]))
-                else:
-                    branch.add(" ".join(handler_info))
+    def _build(self) -> None:
+        for route in self._routes:
+            if isinstance(route, HTTPRoute):
+                self._handle_http_route(route)
+            elif isinstance(route, WebSocketRoute):
+                self._handle_websocket_route(route)
+            else:
+                self._handle_asgi_route(route)
 
-        else:
-            route_type = "WS" if isinstance(route, WebSocketRoute) else "ASGI"
-            branch = tree.add(f"[green]{route.path}[/green] ({route_type})")
-            branch.add(f"[blue]{route.route_handler.name or route.route_handler.handler_name}[/blue]")
+    def _handle_asgi_like_route(self, route: ASGIRoute | WebSocketRoute, route_type: str) -> None:
+        branch = self.add(f"[green]{route.path}[/green] ({route_type})")
+        branch.add(f"[blue]{route.route_handler.name or route.route_handler.handler_name}[/blue]")
 
-    console.print(tree)
+    def _handle_asgi_route(self, route: ASGIRoute) -> None:
+        self._handle_asgi_like_route(route, route_type="ASGI")
+
+    def _handle_websocket_route(self, route: WebSocketRoute) -> None:
+        self._handle_asgi_like_route(route, route_type="WS")
+
+    def _handle_http_route(self, route: HTTPRoute) -> None:
+        branch = self.add(f"[green]{route.path}[/green] (HTTP)")
+        for handler in route.route_handlers:
+            handler_info = [
+                f"[blue]{handler.name or handler.handler_name}[/blue]",
+            ]
+
+            if inspect.iscoroutinefunction(unwrap_partial(handler.fn)):
+                handler_info.append("[magenta]async[/magenta]")
+            else:
+                handler_info.append("[yellow]sync[/yellow]")
+
+            handler_info.append(f'[cyan]{", ".join(sorted(handler.http_methods))}[/cyan]')
+
+            if len(handler.paths) > 1:
+                for path in handler.paths:
+                    branch.add(" ".join([f"[green]{path}[green]", *handler_info]))
+            else:
+                branch.add(" ".join(handler_info))

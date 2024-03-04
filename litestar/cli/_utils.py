@@ -9,11 +9,13 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+from importlib.util import find_spec
 from itertools import chain
 from os import getenv
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Generator, Iterable, Sequence, TypeVar, cast
 
+from click import ClickException, Command, Context, Group, pass_context
 from rich import get_console
 from rich.table import Table
 from typing_extensions import ParamSpec, get_type_hints
@@ -21,43 +23,6 @@ from typing_extensions import ParamSpec, get_type_hints
 from litestar import Litestar, __version__
 from litestar.middleware import DefineMiddleware
 from litestar.utils import get_name
-
-RICH_CLICK_INSTALLED = False
-with contextlib.suppress(ImportError):
-    import rich_click  # noqa: F401
-
-    RICH_CLICK_INSTALLED = True
-UVICORN_INSTALLED = False
-with contextlib.suppress(ImportError):
-    import uvicorn  # noqa: F401
-
-    UVICORN_INSTALLED = True
-JSBEAUTIFIER_INSTALLED = False
-with contextlib.suppress(ImportError):
-    import jsbeautifier  # noqa: F401
-
-    JSBEAUTIFIER_INSTALLED = True
-
-if TYPE_CHECKING or not RICH_CLICK_INSTALLED:  # pragma: no cover
-    from click import ClickException, Command, Context, Group, pass_context
-else:
-    from rich_click import ClickException, Context, pass_context
-    from rich_click.rich_command import RichCommand as Command
-    from rich_click.rich_command import RichGroup as Group
-
-
-__all__ = (
-    "RICH_CLICK_INSTALLED",
-    "UVICORN_INSTALLED",
-    "JSBEAUTIFIER_INSTALLED",
-    "LoadedApp",
-    "LitestarCLIException",
-    "LitestarEnv",
-    "LitestarExtensionGroup",
-    "LitestarGroup",
-    "show_app_info",
-)
-
 
 if sys.version_info >= (3, 10):
     from importlib.metadata import entry_points
@@ -69,6 +34,22 @@ if TYPE_CHECKING:
     from litestar.openapi import OpenAPIConfig
     from litestar.routes import ASGIRoute, HTTPRoute, WebSocketRoute
     from litestar.types import AnyCallable
+
+
+UVICORN_INSTALLED = find_spec("uvicorn") is not None
+JSBEAUTIFIER_INSTALLED = find_spec("jsbeautifier") is not None
+
+
+__all__ = (
+    "UVICORN_INSTALLED",
+    "JSBEAUTIFIER_INSTALLED",
+    "LoadedApp",
+    "LitestarCLIException",
+    "LitestarEnv",
+    "LitestarExtensionGroup",
+    "LitestarGroup",
+    "show_app_info",
+)
 
 
 P = ParamSpec("P")
@@ -102,6 +83,8 @@ class LitestarEnv:
     uds: str | None = None
     reload: bool | None = None
     reload_dirs: tuple[str, ...] | None = None
+    reload_include: tuple[str, ...] | None = None
+    reload_exclude: tuple[str, ...] | None = None
     web_concurrency: int | None = None
     is_app_factory: bool = False
     certfile_path: str | None = None
@@ -137,6 +120,8 @@ class LitestarEnv:
         uds = getenv("LITESTAR_UNIX_DOMAIN_SOCKET")
         fd = getenv("LITESTAR_FILE_DESCRIPTOR")
         reload_dirs = tuple(s.strip() for s in getenv("LITESTAR_RELOAD_DIRS", "").split(",") if s) or None
+        reload_include = tuple(s.strip() for s in getenv("LITESTAR_RELOAD_INCLUDES", "").split(",") if s) or None
+        reload_exclude = tuple(s.strip() for s in getenv("LITESTAR_RELOAD_EXCLUDES", "").split(",") if s) or None
 
         return cls(
             app_path=loaded_app.app_path,
@@ -148,6 +133,8 @@ class LitestarEnv:
             fd=int(fd) if fd else None,
             reload=_bool_from_env("LITESTAR_RELOAD"),
             reload_dirs=reload_dirs,
+            reload_include=reload_include,
+            reload_exclude=reload_exclude,
             web_concurrency=int(web_concurrency) if web_concurrency else None,
             is_app_factory=loaded_app.is_factory,
             cwd=cwd,
@@ -506,7 +493,7 @@ def _generate_self_signed_cert(certfile_path: Path, keyfile_path: Path, common_n
         from cryptography.x509.oid import NameOID
     except ImportError as err:
         raise LitestarCLIException(
-            "Cryptogpraphy must be installed when using --create-self-signed-cert\nPlease install the litestar[cryptography] extras"
+            "Cryptography must be installed when using --create-self-signed-cert\nPlease install the litestar[cryptography] extras"
         ) from err
 
     subject = x509.Name(

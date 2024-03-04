@@ -248,8 +248,7 @@ Litestar also supports returning ASGI applications directly, as you would respon
 
    @get("/")
    def handler() -> ASGIApp:
-       async def my_asgi_app(scope: Scope, receive: Receive, send: Send) -> None:
-           ...
+       async def my_asgi_app(scope: Scope, receive: Receive, send: Send) -> None: ...
 
        return my_asgi_app
 
@@ -364,8 +363,7 @@ The respective descriptions will be used for the OpenAPI documentation.
     .. code-block:: python
 
         @get(response_headers={"my-header": "header-value"})
-        async def handler() -> str:
-            ...
+        async def handler() -> str: ...
 
 
 
@@ -511,8 +509,7 @@ Of the two declarations of ``my-cookie`` only the route handler one will be used
     .. code-block:: python
 
         @get(response_cookies={"my-cookie": "cookie-value"})
-        async def handler() -> str:
-            ...
+        async def handler() -> str: ...
 
 
 .. seealso::
@@ -714,11 +711,11 @@ instances.
 .. admonition:: Layered architecture
     :class: seealso
 
-   Response classes are part of Litestar's layered architecture, which means you can
-   set a response class on every layer of the application. If you have set a response
-   class on multiple layers, the layer closest to the route handler will take precedence.
+    Response classes are part of Litestar's layered architecture, which means you can
+    set a response class on every layer of the application. If you have set a response
+    class on multiple layers, the layer closest to the route handler will take precedence.
 
-   You can read more about this here: :ref:`usage/applications:layered architecture`
+    You can read more about this here: :ref:`usage/applications:layered architecture`
 
 Background Tasks
 ----------------
