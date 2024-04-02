@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Callable, Literal
-
-from yaml import dump as dump_yaml
+from typing import TYPE_CHECKING, Any, Callable, Final, Literal
 
 from litestar.constants import OPENAPI_NOT_INITIALIZED
 from litestar.controller import Controller
@@ -21,6 +19,8 @@ __all__ = ("OpenAPIController",)
 if TYPE_CHECKING:
     from litestar.connection.request import Request
     from litestar.openapi.spec.open_api import OpenAPI
+
+_OPENAPI_JSON_ROUTER_NAME: Final = "__litestar_openapi_json"
 
 
 class OpenAPIController(Controller):
@@ -163,6 +163,8 @@ class OpenAPIController(Controller):
         Returns:
             A Response instance with the YAML object rendered into a string.
         """
+        from yaml import dump as dump_yaml
+
         if self.should_serve_endpoint(request):
             if not self._dumped_json_schema:
                 schema_json = decode_json(self._get_schema_as_json(request))
@@ -171,7 +173,13 @@ class OpenAPIController(Controller):
             return ASGIResponse(body=self._dumped_yaml_schema, media_type=OpenAPIMediaType.OPENAPI_YAML)
         return ASGIResponse(body=b"", status_code=HTTP_404_NOT_FOUND, media_type=MediaType.HTML)
 
-    @get(path="/openapi.json", media_type=OpenAPIMediaType.OPENAPI_JSON, include_in_schema=False, sync_to_thread=False)
+    @get(
+        path="/openapi.json",
+        media_type=OpenAPIMediaType.OPENAPI_JSON,
+        include_in_schema=False,
+        sync_to_thread=False,
+        name=_OPENAPI_JSON_ROUTER_NAME,
+    )
     def retrieve_schema_json(self, request: Request[Any, Any, Any]) -> ASGIResponse:
         """Return the OpenAPI schema as JSON with an ``application/vnd.oai.openapi+json`` Content-Type header.
 
@@ -457,10 +465,10 @@ class OpenAPIController(Controller):
           </head>
         """
 
-        body = """
+        body = f"""
           <body>
             <elements-api
-                apiDescriptionUrl="openapi.json"
+                apiDescriptionUrl="{request.app.route_reverse(_OPENAPI_JSON_ROUTER_NAME)}"
                 router="hash"
                 layout="sidebar"
             />
@@ -489,9 +497,9 @@ class OpenAPIController(Controller):
           </head>
         """
 
-        body = """
+        body = f"""
           <body>
-            <rapi-doc spec-url="openapi.json" />
+            <rapi-doc spec-url="{request.app.route_reverse(_OPENAPI_JSON_ROUTER_NAME)}" />
           </body>
         """
 

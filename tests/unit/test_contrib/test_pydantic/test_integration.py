@@ -91,8 +91,7 @@ def test_pydantic_v2_validation_error_raises_400(meta: Any) -> None:
 
 def test_default_error_handling() -> None:
     @post("/{param:int}")
-    def my_route_handler(param: int, data: PydanticPerson) -> None:
-        ...
+    def my_route_handler(param: int, data: PydanticPerson) -> None: ...
 
     with create_test_client(my_route_handler) as client:
         response = client.post("/123", json={"first_name": "moishe"})
@@ -103,14 +102,42 @@ def test_default_error_handling() -> None:
 
 def test_default_error_handling_v1() -> None:
     @post("/{param:int}")
-    def my_route_handler(param: int, data: PydanticV1Person) -> None:
-        ...
+    def my_route_handler(param: int, data: PydanticV1Person) -> None: ...
 
     with create_test_client(my_route_handler) as client:
         response = client.post("/123", json={"first_name": "moishe"})
         extra = response.json().get("extra")
         assert extra is not None
         assert len(extra) == 4
+
+
+def test_serialize_raw_errors_v2() -> None:
+    # https://github.com/litestar-org/litestar/issues/2365
+    class User(pydantic_v2.BaseModel):
+        user_id: int
+
+        @pydantic_v2.field_validator("user_id")
+        @classmethod
+        def validate_user_id(cls, user_id: int) -> None:
+            raise ValueError("user id must be greater than 0")
+
+    @post("/", dto=PydanticDTO[User])
+    async def create_user(data: User) -> User:
+        return data
+
+    with create_test_client(create_user) as client:
+        response = client.post("/", json={"user_id": -1})
+        extra = response.json().get("extra")
+        assert extra == [
+            {
+                "type": "value_error",
+                "loc": ["user_id"],
+                "msg": "Value error, user id must be greater than 0",
+                "input": -1,
+                "ctx": {"error": "ValueError"},
+                "url": "https://errors.pydantic.dev/2.6/v/value_error",
+            }
+        ]
 
 
 def test_signature_model_invalid_input(
@@ -134,8 +161,7 @@ def test_signature_model_invalid_input(
         length_param: str = Parameter(min_length=2),
         int_header: int = Parameter(header="X-SOME-INT"),
         int_cookie: int = Parameter(cookie="int-cookie"),
-    ) -> None:
-        ...
+    ) -> None: ...
 
     with create_test_client(route_handlers=[test], signature_types=[Parent]) as client:
         client.cookies.update({"int-cookie": "cookie"})

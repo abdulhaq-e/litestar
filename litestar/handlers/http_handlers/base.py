@@ -4,6 +4,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, AnyStr, Mapping, Sequence, TypedDict, cast
 
 from litestar._layers.utils import narrow_response_cookies, narrow_response_headers
+from litestar.connection import Request
 from litestar.datastructures.cookie import Cookie
 from litestar.datastructures.response_header import ResponseHeader
 from litestar.enums import HttpMethod, MediaType
@@ -54,7 +55,6 @@ if TYPE_CHECKING:
     from litestar.app import Litestar
     from litestar.background_tasks import BackgroundTask, BackgroundTasks
     from litestar.config.response_cache import CACHE_FOREVER
-    from litestar.connection import Request
     from litestar.datastructures import CacheControlHeader, ETag
     from litestar.di import Provide
     from litestar.dto import AbstractDTO
@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from litestar.openapi.spec import SecurityRequirement
     from litestar.types.callable_types import AsyncAnyCallable, OperationIDCreator
     from litestar.typing import FieldDefinition
+    from litestar.types.composite_types import TypeDecodersSequence
 
 __all__ = ("HTTPRouteHandler", "route")
 
@@ -103,6 +104,7 @@ class HTTPRouteHandler(BaseRouteHandler):
         "operation_class",
         "operation_id",
         "raises",
+        "request_class",
         "response_class",
         "response_cookies",
         "response_description",
@@ -139,6 +141,7 @@ class HTTPRouteHandler(BaseRouteHandler):
         middleware: Sequence[Middleware] | None = None,
         name: str | None = None,
         opt: Mapping[str, Any] | None = None,
+        request_class: type[Request] | None = None,
         response_class: type[Response] | None = None,
         response_cookies: ResponseCookies | None = None,
         response_headers: ResponseHeaders | None = None,
@@ -160,6 +163,7 @@ class HTTPRouteHandler(BaseRouteHandler):
         security: Sequence[SecurityRequirement] | None = None,
         summary: str | None = None,
         tags: Sequence[str] | None = None,
+        type_decoders: TypeDecodersSequence | None = None,
         type_encoders: TypeEncodersMap | None = None,
         **kwargs: Any,
     ) -> None:
@@ -201,6 +205,8 @@ class HTTPRouteHandler(BaseRouteHandler):
             opt: A string keyed mapping of arbitrary values that can be accessed in :class:`Guards <.types.Guard>` or
                 wherever you have access to :class:`Request <.connection.Request>` or
                 :class:`ASGI Scope <.types.Scope>`.
+            request_class: A custom subclass of :class:`Request <.connection.Request>` to be used as route handler's
+                default request.
             response_class: A custom subclass of :class:`Response <.response.Response>` to be used as route handler's
                 default response.
             response_cookies: A sequence of :class:`Cookie <.datastructures.Cookie>` instances.
@@ -229,6 +235,7 @@ class HTTPRouteHandler(BaseRouteHandler):
             security: A sequence of dictionaries that contain information about which security scheme can be used on the endpoint.
             summary: Text used for the route's schema summary section.
             tags: A sequence of string tags that will be appended to the OpenAPI schema.
+            type_decoders: A sequence of tuples, each composed of a predicate testing for type identity and a msgspec hook for deserialization.
             type_encoders: A mapping of types to callables that transform them into types supported for serialization.
             **kwargs: Any additional kwarg - will be set in the opt dictionary.
         """
@@ -236,7 +243,9 @@ class HTTPRouteHandler(BaseRouteHandler):
             raise ImproperlyConfiguredException("An http_method kwarg is required")
 
         self.http_methods = normalize_http_method(http_methods=http_method)
-        self.status_code = status_code or get_default_status_code(http_methods=self.http_methods)
+        self.status_code = status_code or get_default_status_code(
+            http_methods=self.http_methods
+        )
 
         super().__init__(
             path=path,
@@ -249,22 +258,34 @@ class HTTPRouteHandler(BaseRouteHandler):
             opt=opt,
             return_dto=return_dto,
             signature_namespace=signature_namespace,
+            type_decoders=type_decoders,
             type_encoders=type_encoders,
             **kwargs,
         )
 
-        self.after_request = ensure_async_callable(after_request) if after_request else None  # pyright: ignore
-        self.after_response = ensure_async_callable(after_response) if after_response else None
+        self.after_request = (
+            ensure_async_callable(after_request) if after_request else None
+        )  # pyright: ignore
+        self.after_response = (
+            ensure_async_callable(after_response) if after_response else None
+        )
         self.background = background
-        self.before_request = ensure_async_callable(before_request) if before_request else None
+        self.before_request = (
+            ensure_async_callable(before_request) if before_request else None
+        )
         self.cache = cache
         self.cache_control = cache_control
         self.cache_key_builder = cache_key_builder
         self.etag = etag
         self.media_type: MediaType | str = media_type or ""
+        self.request_class = request_class
         self.response_class = response_class
-        self.response_cookies: Sequence[Cookie] | None = narrow_response_cookies(response_cookies)
-        self.response_headers: Sequence[ResponseHeader] | None = narrow_response_headers(response_headers)
+        self.response_cookies: Sequence[Cookie] | None = narrow_response_cookies(
+            response_cookies
+        )
+        self.response_headers: Sequence[
+            ResponseHeader
+        ] | None = narrow_response_headers(response_headers)
 
         self.sync_to_thread = sync_to_thread
         # OpenAPI related attributes
@@ -303,6 +324,23 @@ class HTTPRouteHandler(BaseRouteHandler):
         super().__call__(fn)
         return self
 
+    def resolve_request_class(self) -> type[Request]:
+        """Return the closest custom Request class in the owner graph or the default Request class.
+
+        This method is memoized so the computation occurs only once.
+
+        Returns:
+            The default :class:`Request <.connection.Request>` class for the route handler.
+        """
+        return next(
+            (
+                layer.request_class
+                for layer in reversed(self.ownership_layers)
+                if layer.request_class is not None
+            ),
+            Request,
+        )
+
     def resolve_response_class(self) -> type[Response]:
         """Return the closest custom Response class in the owner graph or the default Response class.
 
@@ -314,7 +352,7 @@ class HTTPRouteHandler(BaseRouteHandler):
         return next(
             (
                 layer.response_class
-                for layer in list(reversed(self.ownership_layers))
+                for layer in reversed(self.ownership_layers)
                 if layer.response_class is not None
             ),
             Response,
@@ -334,13 +372,20 @@ class HTTPRouteHandler(BaseRouteHandler):
                     # this can't happen unless you manually set response_headers on an instance, which would result in a
                     # type-checking error on everything but the controller. We cover this case nevertheless
                     resolved_response_headers.update(
-                        {name: ResponseHeader(name=name, value=value) for name, value in layer_response_headers.items()}
+                        {
+                            name: ResponseHeader(name=name, value=value)
+                            for name, value in layer_response_headers.items()
+                        }
                     )
                 else:
-                    resolved_response_headers.update({h.name: h for h in layer_response_headers})
+                    resolved_response_headers.update(
+                        {h.name: h for h in layer_response_headers}
+                    )
             for extra_header in ("cache_control", "etag"):
                 if header_model := getattr(layer, extra_header, None):
-                    resolved_response_headers[header_model.HEADER_NAME] = ResponseHeader(
+                    resolved_response_headers[
+                        header_model.HEADER_NAME
+                    ] = ResponseHeader(
                         name=header_model.HEADER_NAME,
                         value=header_model.to_header(),
                         documentation_only=header_model.documentation_only,
@@ -361,7 +406,10 @@ class HTTPRouteHandler(BaseRouteHandler):
                     # this can't happen unless you manually set response_cookies on an instance, which would result in a
                     # type-checking error on everything but the controller. We cover this case nevertheless
                     response_cookies.update(
-                        {Cookie(key=key, value=value) for key, value in layer_response_cookies.items()}
+                        {
+                            Cookie(key=key, value=value)
+                            for key, value in layer_response_cookies.items()
+                        }
                     )
                 else:
                     response_cookies.update(cast("set[Cookie]", layer_response_cookies))
@@ -377,8 +425,14 @@ class HTTPRouteHandler(BaseRouteHandler):
             An optional :class:`before request lifecycle hook handler <.types.BeforeRequestHookHandler>`
         """
         if self._resolved_before_request is Empty:
-            before_request_handlers = [layer.before_request for layer in self.ownership_layers if layer.before_request]
-            self._resolved_before_request = before_request_handlers[-1] if before_request_handlers else None
+            before_request_handlers = [
+                layer.before_request
+                for layer in self.ownership_layers
+                if layer.before_request
+            ]
+            self._resolved_before_request = (
+                before_request_handlers[-1] if before_request_handlers else None
+            )
         return cast("AsyncAnyCallable | None", self._resolved_before_request)
 
     def resolve_after_response(self) -> AsyncAnyCallable | None:
@@ -396,7 +450,9 @@ class HTTPRouteHandler(BaseRouteHandler):
                 for layer in self.ownership_layers
                 if layer.after_response
             ]
-            self._resolved_after_response = after_response_handlers[-1] if after_response_handlers else None
+            self._resolved_after_response = (
+                after_response_handlers[-1] if after_response_handlers else None
+            )
 
         return cast("AsyncAnyCallable | None", self._resolved_after_response)
 
@@ -411,9 +467,13 @@ class HTTPRouteHandler(BaseRouteHandler):
         """
         if self._resolved_include_in_schema is Empty:
             include_in_schemas = [
-                i.include_in_schema for i in self.ownership_layers if isinstance(i.include_in_schema, bool)
+                i.include_in_schema
+                for i in self.ownership_layers
+                if isinstance(i.include_in_schema, bool)
             ]
-            self._resolved_include_in_schema = include_in_schemas[-1] if include_in_schemas else True
+            self._resolved_include_in_schema = (
+                include_in_schemas[-1] if include_in_schemas else True
+            )
 
         return self._resolved_include_in_schema
 
@@ -451,7 +511,9 @@ class HTTPRouteHandler(BaseRouteHandler):
 
         return self._resolved_tags
 
-    def get_response_handler(self, is_response_type_data: bool = False) -> Callable[[Any], Awaitable[ASGIApp]]:
+    def get_response_handler(
+        self, is_response_type_data: bool = False
+    ) -> Callable[[Any], Awaitable[ASGIApp]]:
         """Resolve the response_handler function for the route handler.
 
         This method is memoized so the computation occurs only once.
@@ -473,7 +535,11 @@ class HTTPRouteHandler(BaseRouteHandler):
                 after_request_handlers[-1] if after_request_handlers else None,
             )
 
-            media_type = self.media_type.value if isinstance(self.media_type, Enum) else self.media_type
+            media_type = (
+                self.media_type.value
+                if isinstance(self.media_type, Enum)
+                else self.media_type
+            )
             response_class = self.resolve_response_class()
             headers = self.resolve_response_headers()
             cookies = self.resolve_response_cookies()
@@ -482,7 +548,9 @@ class HTTPRouteHandler(BaseRouteHandler):
             return_type = self.parsed_fn_signature.return_type
             return_annotation = return_type.annotation
 
-            self._response_handler_mapping["response_type_handler"] = response_type_handler = create_response_handler(
+            self._response_handler_mapping[
+                "response_type_handler"
+            ] = response_type_handler = create_response_handler(
                 after_request=after_request,
                 background=self.background,
                 cookies=cookies,
@@ -493,11 +561,13 @@ class HTTPRouteHandler(BaseRouteHandler):
             )
 
             if return_type.is_subclass_of(Response):
-                self._response_handler_mapping["default_handler"] = response_type_handler
+                self._response_handler_mapping[
+                    "default_handler"
+                ] = response_type_handler
             elif is_async_callable(return_annotation) or return_annotation is ASGIApp:
-                self._response_handler_mapping["default_handler"] = create_generic_asgi_response_handler(
-                    after_request=after_request
-                )
+                self._response_handler_mapping[
+                    "default_handler"
+                ] = create_generic_asgi_response_handler(after_request=after_request)
             else:
                 self._response_handler_mapping["default_handler"] = create_data_handler(
                     after_request=after_request,
@@ -532,8 +602,10 @@ class HTTPRouteHandler(BaseRouteHandler):
         if return_dto_type := self.resolve_return_dto():
             data = return_dto_type(request).data_to_encodable_type(data)
 
-        response_handler = self.get_response_handler(is_response_type_data=isinstance(data, Response))
-        return await response_handler(app=app, data=data, request=request)  # type: ignore
+        response_handler = self.get_response_handler(
+            is_response_type_data=isinstance(data, Response)
+        )
+        return await response_handler(app=app, data=data, request=request)  # type: ignore[call-arg]
 
     def on_registration(self, app: Litestar) -> None:
         super().on_registration(app)
@@ -558,7 +630,8 @@ class HTTPRouteHandler(BaseRouteHandler):
             )
 
         if (
-            self.status_code < 200 or self.status_code in {HTTP_204_NO_CONTENT, HTTP_304_NOT_MODIFIED}
+            self.status_code < 200
+            or self.status_code in {HTTP_204_NO_CONTENT, HTTP_304_NOT_MODIFIED}
         ) and not is_empty_response_annotation(return_type):
             raise ImproperlyConfiguredException(
                 "A status code 204, 304 or in the range below 200 does not support a response body. "
@@ -566,16 +639,23 @@ class HTTPRouteHandler(BaseRouteHandler):
             )
 
         if not self.media_type:
-            if return_type.is_subclass_of((str, bytes)) or return_type.annotation is AnyStr:
+            if (
+                return_type.is_subclass_of((str, bytes))
+                or return_type.annotation is AnyStr
+            ):
                 self.media_type = MediaType.TEXT
             elif not return_type.is_subclass_of(Response):
                 self.media_type = MediaType.JSON
 
         if "socket" in self.parsed_fn_signature.parameters:
-            raise ImproperlyConfiguredException("The 'socket' kwarg is not supported with http handlers")
+            raise ImproperlyConfiguredException(
+                "The 'socket' kwarg is not supported with http handlers"
+            )
 
         if "data" in self.parsed_fn_signature.parameters and "GET" in self.http_methods:
-            raise ImproperlyConfiguredException("'data' kwarg is unsupported for 'GET' request handlers")
+            raise ImproperlyConfiguredException(
+                "'data' kwarg is unsupported for 'GET' request handlers"
+            )
 
 
 route = HTTPRouteHandler

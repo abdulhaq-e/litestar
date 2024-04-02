@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from litestar._openapi.datastructures import OpenAPIContext
-from litestar._openapi.path_item import create_path_item_for_route
+from litestar._openapi.path_item import create_path_item_for_route, merge_path_item_operations
 from litestar.exceptions import ImproperlyConfiguredException
 from litestar.plugins import InitPluginProtocol
 from litestar.plugins.base import ReceiveRoutePlugin
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from litestar.app import Litestar
     from litestar.config.app import AppConfig
     from litestar.openapi.config import OpenAPIConfig
-    from litestar.openapi.spec import OpenAPI
+    from litestar.openapi.spec import OpenAPI, PathItem
     from litestar.routes import BaseRoute
 
 
@@ -32,12 +32,24 @@ class OpenAPIPlugin(InitPluginProtocol, ReceiveRoutePlugin):
         self._openapi_schema: OpenAPI | None = None
 
     def _build_openapi_schema(self) -> OpenAPI:
-        openapi = self.openapi_config.to_openapi_schema()
-        context = OpenAPIContext(openapi_config=self.openapi_config, plugins=self.app.plugins.openapi)
-        openapi.paths = {
-            route.path_format or "/": create_path_item_for_route(context, route)
-            for route in self.included_routes.values()
-        }
+        openapi_config = self.openapi_config
+
+        if openapi_config.create_examples:
+            from litestar._openapi.schema_generation.examples import ExampleFactory
+
+            ExampleFactory.seed_random(openapi_config.random_seed)
+
+        openapi = openapi_config.to_openapi_schema()
+        context = OpenAPIContext(openapi_config=openapi_config, plugins=self.app.plugins.openapi)
+        path_items: dict[str, PathItem] = {}
+        for route in self.included_routes.values():
+            path = route.path_format or "/"
+            path_item = create_path_item_for_route(context, route)
+            if existing_path_item := path_items.get(path):
+                path_item = merge_path_item_operations(existing_path_item, path_item, for_path=path)
+            path_items[path] = path_item
+
+        openapi.paths = path_items
         openapi.components.schemas = context.schema_registry.generate_components_schemas()
         return openapi
 

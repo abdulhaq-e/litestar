@@ -3,6 +3,240 @@
 2.x Changelog
 =============
 
+.. changelog:: 2.7.1
+    :date: 2024-03-22
+
+    .. change:: replace TestClient.__enter__ return type with Self
+        :type: bugfix
+        :pr: 3194
+
+        ``TestClient.__enter__`` and ``AsyncTestClient.__enter__`` return ``Self``.
+        If you inherit ``TestClient``, its ``__enter__`` method should return derived class's instance
+        unless override the method. ``Self`` is a more flexible return type.
+
+    .. change:: use the full path for fetching openapi.json
+        :type: bugfix
+        :pr: 3196
+        :issue: 3047
+
+        This specifies the ``spec-url`` and ``apiDescriptionUrl`` of Rapidoc, and Stoplight Elements as absolute
+        paths relative to the root of the site.
+
+        This ensures that both of the send the request for the JSON of the OpenAPI schema to the right endpoint.
+
+    .. change:: JSON schema ``examples`` were OpenAPI formatted
+        :type: bugfix
+        :pr: 3224
+        :issue: 2849
+
+        The generated ``examples`` in *JSON schema* objects were formatted as:
+
+        .. code-block:: json
+
+            "examples": {
+              "some-id": {
+                "description": "Lorem ipsum",
+                "value": "the real beef"
+              }
+           }
+
+        However, above is OpenAPI example format, and must not be used in JSON schema
+        objects. Schema objects follow different formatting:
+
+        .. code-block:: json
+
+            "examples": [
+              "the real beef"
+           ]
+
+        * Explained in `APIs You Won't Hate blog post <https://medium.com/apis-you-wont-hate/openapi-v3-1-and-json-schema-2019-09-6862cf3db959>`_.
+        * `Schema objects spec <https://spec.openapis.org/oas/v3.1.0#schema-object>`_
+        * `OpenAPI example format spec <https://spec.openapis.org/oas/v3.1.0#example-object>`_.
+
+        This is referenced at least from parameters, media types and components.
+
+        The technical change here is to define ``Schema.examples`` as ``list[Any]`` instead
+        of ``list[Example]``. Examples can and must still be defined as ``list[Example]``
+        for OpenAPI objects (e.g. ``Parameter``, ``Body``) but for JSON schema ``examples``
+        the code now internally generates/converts ``list[Any]`` format instead.
+
+        Extra confusion here comes from the OpenAPI 3.0 vs OpenAPI 3.1 difference.
+        OpenAPI 3.0 only allowed ``example`` (singular) field in schema objects.
+        OpenAPI 3.1 supports the full JSON schema 2020-12 spec and so ``examples`` array
+        in schema objects.
+
+        Both ``example`` and ``examples`` seem to be supported, though the former is marked
+        as deprecated in the latest specs.
+
+        This can be tested over at https://editor-next.swagger.io by loading up the
+        OpenAPI 3.1 Pet store example. Then add ``examples`` in ``components.schemas.Pet``
+        using the both ways and see the Swagger UI only render the example once it's
+        properly formatted (it ignores is otherwise).
+
+    .. change:: queue_listener handler for Python >= 3.12
+        :type: bugfix
+        :pr: 3185
+        :issue: 2954
+
+        - Fix the ``queue_listener`` handler for Python 3.12
+
+        Python 3.12 introduced a new way to configure ``QueueHandler`` and ``QueueListener`` via
+        ``logging.config.dictConfig()``. As described in the
+        `logging documentation <https://docs.python.org/3/library/logging.config.html#configuring-queuehandler-and-queuelistener>`_.
+
+        The listener still needs to be started & stopped, as previously.
+        To do so, we've introduced ``LoggingQueueListener``.
+
+        And as stated in the doc:
+        * Any custom queue handler and listener classes will need to be defined with the same initialization signatures
+        as `QueueHandler <https://docs.python.org/3/library/logging.handlers.html#logging.handlers.QueueHandler>`_ and
+        `QueueListener <https://docs.python.org/3/library/logging.handlers.html#logging.handlers.QueueListener>`_.
+
+    .. change:: extend openapi meta collected from domain models
+        :type: bugfix
+        :pr: 3237
+        :issue: 3232
+
+        :class:`~litestar.typing.FieldDefinition` s pack any OpenAPI metadata onto a ``KwargDefinition`` instance when
+        types are parsed from domain models.
+
+        When we produce a DTO type, we transfer this meta from the `KwargDefinition` to a `msgspec.Meta` instance,
+        however so far this has only included constraints, not attributes such as descriptions, examples and title.
+
+        This change ensures that we transfer the openapi meta for the complete intersection of fields that exist on b
+        oth `KwargDefinition` and `Meta`.
+
+    .. change:: kwarg ambiguity exc msg for path params
+        :type: bugfix
+        :pr: 3261
+
+        Fixes the way we construct the exception message when there is a kwarg ambiguity detected for path parameters.
+
+.. changelog:: 2.7.0
+    :date: 2024-03-10
+
+    .. change:: missing cors headers in response
+        :type: bugfix
+        :pr: 3179
+        :issue: 3178
+
+        Set CORS Middleware headers as per spec.
+        Addresses issues outlined on https://github.com/litestar-org/litestar/issues/3178
+
+    .. change:: sending empty data in sse in js client
+        :type: bugfix
+        :pr: 3176
+
+        Fix an issue with SSE where JavaScript clients fail to receive an event without data.
+        The `spec <https://html.spec.whatwg.org/multipage/server-sent-events.html#parsing-an-event-stream>`_ is
+        not clear in whether or not an event without data is ok.
+        Considering the EventSource "client" is not ok with it, and that it's so easy DX-wise to make the mistake not
+        explicitly sending it, this change fixes it by defaulting to the empty-string
+
+    .. change:: Support ``ResponseSpec(..., examples=[...])``
+        :type: feature
+        :pr: 3100
+        :issue: 3068
+
+        Allow defining custom examples for the responses via ``ResponseSpec``.
+        The examples set this way are always generated locally, for each response:
+        Examples that go within the schema definition cannot be set by this.
+
+        .. code-block:: json
+
+            {
+            "paths": {
+                "/": {
+                "get": {
+                    "responses": {
+                    "200": {
+                        "content": {
+                        "application/json": {
+                            "schema": {},
+                            "examples": "..."}}
+                        }}
+                    }}
+                }
+            }
+
+
+    .. change:: support "+json"-suffixed response media types
+        :type: feature
+        :pr: 3096
+        :issue: 3088
+
+        Automatically encode responses with media type of the form ``application/<something>+json`` as json.
+
+    .. change:: Allow reusable ``Router`` instances
+        :type: feature
+        :pr: 3103
+        :issue: 3012
+
+        It was not possible to re-attach a router instance once it was attached. This
+        makes that possible.
+
+        The router instance now gets deepcopied when it's registered to another router.
+
+        The application startup performance gets a hit here, but the same approach is
+        already used for controllers and handlers, so this only harmonizes the
+        implementation.
+
+    .. change:: only display path in ``ValidationException``\ s
+        :type: feature
+        :pr: 3064
+        :issue: 3061
+
+        Fix an issue where ``ValidationException`` exposes the full URL in the error response, leaking internal IP(s) or other similar infra related information.
+
+    .. change:: expose ``request_class`` to other layers
+        :type: feature
+        :pr: 3125
+
+        Expose ``request_class`` to other layers
+
+    .. change:: expose ``websocket_class``
+        :type: feature
+        :pr: 3152
+
+        Expose ``websocket_class`` to other layers
+
+    .. change:: Add ``type_decoders`` to Router and route handlers
+        :type: feature
+        :pr: 3153
+
+        Add ``type_decoders`` to ``__init__`` method for handler, routers and decorators to keep consistency with ``type_encoders`` parameter
+
+    .. change:: Pass ``type_decoders`` in ``WebsocketListenerRouteHandler``
+        :type: feature
+        :pr: 3162
+
+        Pass ``type_decoders`` to parent's ``__init__`` in ``WebsocketListenerRouteHandler`` init, otherwise ``type_decoders`` will be ``None``
+        replace params order in docs, ``__init__`` (`decoders` before `encoders`)
+
+    .. change:: 3116 enhancement session middleware
+        :type: feature
+        :pr: 3127
+        :issue: 3116
+
+        For server side sessions, the session id is now generated before the route handler. Thus, on first visit, a session id will be available inside the route handler's scope instead of afterwards
+        A new abstract method ``get_session_id`` was added to ``BaseSessionBackend`` since this method will be called for both ClientSideSessions and ServerSideSessions. Only for ServerSideSessions it will return an actual id.
+        Using ``request.set_session(...)`` will return the session id for ServerSideSessions and None for ClientSideSessions
+        The session auth MiddlewareWrapper now refers to the Session Middleware via the configured backend, instead of it being hardcoded
+
+    .. change:: make random seed for openapi example generation configurable
+        :type: feature
+        :pr: 3166
+
+        Allow random seed used for generating the examples in the OpenAPI schema (when ``create_examples`` is set to ``True``) to be configured by the user.
+        This is related to https://github.com/litestar-org/litestar/issues/3059 however whether this change is enough to close that issue or not is not confirmed.
+
+    .. change:: generate openapi components schemas in a deterministic order
+        :type: feature
+        :pr: 3172
+
+        Ensure that the insertion into the ``Components.schemas`` dictionary of the OpenAPI spec will be in alphabetical order (based on the normalized name of the ``Schema``).
+
+
 .. changelog:: 2.6.3
     :date: 2024-03-04
 

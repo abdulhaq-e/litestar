@@ -57,7 +57,7 @@ maintainers = [
 name = "litestar"
 readme = "README.md"
 requires-python = ">=3.8,<4.0"
-version = "2.6.3"
+version = "2.7.1"
 
 [project.urls]
 Blog = "https://blog.litestar.dev"
@@ -146,10 +146,10 @@ linting = [
   "mypy",
   "pre-commit",
   "slotscheck",
+  "codecov-cli",
   "pyright==1.1.344",
   "asyncpg-stubs",
   "types-beautifulsoup4",
-  "types-pytest-lazy-fixture",
   "types-python-jose",
   "types-pyyaml",
   "types-redis",
@@ -160,7 +160,7 @@ test = [
   "pytest<8.0.0",
   "pytest-asyncio",
   "pytest-cov",
-  "pytest-lazy-fixture",
+  "pytest-lazy-fixtures",
   "pytest-mock",
   "pytest-rerunfailures",
   "pytest-timeout",
@@ -227,6 +227,7 @@ python_version = "3.8"
 
 disallow_any_generics = false
 disallow_untyped_decorators = true
+enable_error_code = "ignore-without-code"
 implicit_reexport = false
 show_error_codes = true
 strict = true
@@ -283,6 +284,12 @@ reportUnnecessaryTypeIgnoreComments = true
 
 [tool.slotscheck]
 strict-imports = false
+exclude-classes = """
+(
+  # github.com/python/cpython/pull/106771
+  (^litestar.events.emitter:BaseEventEmitterBackend)
+)
+"""
 
 [tool.ruff]
 lint.select = [
@@ -402,6 +409,7 @@ known-first-party = ["litestar", "tests", "examples"]
 "tests/unit/test_contrib/test_sqlalchemy/**/*.*" = ["UP006"]
 "tools/**/*.*" = ["D", "ARG", "EM", "TRY", "G", "FBT"]
 "tools/prepare_release.py" = ["S603", "S607"]
+"tests/unit/test_openapi/test_typescript_converter/test_converter.py" = ["W293"]
 
 [tool.ruff.format]
 docstring-code-format = true
