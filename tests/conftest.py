@@ -4,12 +4,13 @@ import importlib.util
 import logging
 import os
 import random
+import shutil
 import string
 import sys
 from datetime import datetime
 from os import urandom
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable, Generator, TypeVar, Union, cast
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable, Generator, Union, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,16 +20,17 @@ from redis.client import Redis
 from time_machine import travel
 
 from litestar.logging import LoggingConfig
-from litestar.logging.config import default_handlers as logging_default_handlers
 from litestar.middleware.session import SessionMiddleware
 from litestar.middleware.session.base import BaseSessionBackend
 from litestar.middleware.session.client_side import ClientSideSessionBackend, CookieBackendConfig
 from litestar.middleware.session.server_side import ServerSideSessionBackend, ServerSideSessionConfig
+from litestar.openapi.config import OpenAPIConfig
 from litestar.stores.base import Store
 from litestar.stores.file import FileStore
 from litestar.stores.memory import MemoryStore
 from litestar.stores.redis import RedisStore
 from litestar.testing import RequestFactory
+from tests.helpers import not_none
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -88,6 +90,18 @@ def memory_store() -> MemoryStore:
 @pytest.fixture()
 def file_store(tmp_path: Path) -> FileStore:
     return FileStore(path=tmp_path)
+
+
+@pytest.fixture()
+def file_store_create_directories(tmp_path: Path) -> FileStore:
+    path = tmp_path / "subdir1" / "subdir2"
+    return FileStore(path=path, create_directories=True)
+
+
+@pytest.fixture()
+def file_store_create_directories_flag_false(tmp_path: Path) -> FileStore:
+    shutil.rmtree(tmp_path, ignore_errors=True)  # in case the path was already created by different tests - we clean it
+    return FileStore(path=tmp_path.joinpath("subdir"), create_directories=False)
 
 
 @pytest.fixture(
@@ -227,11 +241,6 @@ def create_module(tmp_path: Path, monkeypatch: MonkeyPatch) -> Callable[[str], M
         Returns:
             An imported module.
         """
-        T = TypeVar("T")
-
-        def not_none(val: T | T | None) -> T:
-            assert val is not None
-            return val
 
         def module_name_generator() -> str:
             letters = string.ascii_lowercase
@@ -296,7 +305,7 @@ def get_logger() -> GetLogger:
     # due to the limitations of caplog we have to place this call here.
     # we also have to allow propagation.
     return LoggingConfig(
-        handlers=logging_default_handlers,
+        logging_module="logging",
         loggers={
             "litestar": {"level": "INFO", "handlers": ["queue_listener"], "propagate": True},
         },
@@ -315,3 +324,8 @@ async def redis_client(docker_ip: str, redis_service: None) -> AsyncGenerator[As
         await client.aclose()  # type: ignore[attr-defined]
     except RuntimeError:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _patch_openapi_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("litestar.app.DEFAULT_OPENAPI_CONFIG", OpenAPIConfig(title="Litestar API", version="1.0.0"))

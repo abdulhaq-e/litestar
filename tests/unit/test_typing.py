@@ -9,7 +9,9 @@ import msgspec
 import pytest
 from typing_extensions import Annotated, NotRequired, Required, TypedDict, get_type_hints
 
-from litestar.params import DependencyKwarg, KwargDefinition, ParameterKwarg
+from litestar import get
+from litestar.exceptions import LitestarWarning
+from litestar.params import DependencyKwarg, KwargDefinition, Parameter, ParameterKwarg
 from litestar.typing import FieldDefinition, _unpack_predicate
 
 from .test_utils.test_signature import T, _check_field_definition, field_definition_int, test_type_hints
@@ -450,3 +452,27 @@ def test_field_definition_get_type_hints_dont_resolve_generics(
 )
 def test_unpack_predicate(predicate: Any, expected_meta: dict[str, Any]) -> None:
     assert _unpack_predicate(predicate) == expected_meta
+
+
+def test_warn_ambiguous_default_values() -> None:
+    with pytest.warns(LitestarWarning, match="Ambiguous default values"):
+        FieldDefinition.from_annotation(Annotated[int, Parameter(default=1)], default=2)
+
+
+def test_warn_defaults_inside_parameter_definition() -> None:
+    with pytest.warns(DeprecationWarning, match="Deprecated default value specification"):
+        FieldDefinition.from_annotation(Annotated[int, Parameter(default=1)], default=1)
+
+
+def test_warn_default_inside_kwarg_definition_and_default_empty() -> None:
+    with pytest.warns() as warnings:
+
+        @get(sync_to_thread=False)
+        def handler(foo: Annotated[int, Parameter(default=1)]) -> None:
+            pass
+
+        _ = handler.parsed_fn_signature
+
+    (record,) = warnings
+    assert record.category == DeprecationWarning
+    assert "Deprecated default value specification" in str(record.message)

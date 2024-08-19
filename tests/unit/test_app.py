@@ -14,7 +14,8 @@ from click import Group
 from pytest import MonkeyPatch
 
 from litestar import Litestar, MediaType, Request, Response, get
-from litestar.config.app import AppConfig
+from litestar._asgi.asgi_router import ASGIRouter
+from litestar.config.app import AppConfig, ExperimentalFeatures
 from litestar.config.response_cache import ResponseCacheConfig
 from litestar.contrib.sqlalchemy.plugins import SQLAlchemySerializationPlugin
 from litestar.datastructures import MutableScopeHeaders, State
@@ -172,6 +173,7 @@ def test_app_config_object_used(app_config_object: AppConfig, monkeypatch: pytes
     monkeypatch.setattr(Litestar, "register", MagicMock())
     monkeypatch.setattr(Litestar, "_create_asgi_handler", MagicMock())
     monkeypatch.setattr(Router, "__init__", MagicMock())
+    monkeypatch.setattr(ASGIRouter, "__init__", MagicMock(return_value=None))
 
     # instantiates the app with an `on_app_config` that returns our patched `AppConfig` object.
     Litestar(on_app_init=[MagicMock(return_value=app_config_object)])
@@ -445,3 +447,17 @@ def test_lifespan_context_and_shutdown_hook_execution_order() -> None:
     assert events[1] == "ctx_1"
     assert events[2] == "hook_a"
     assert events[3] == "hook_b"
+
+
+def test_use_dto_codegen_feature_flag_warns() -> None:
+    with pytest.warns(LitestarWarning, match="Use of redundant experimental feature flag DTO_CODEGEN"):
+        Litestar(experimental_features=[ExperimentalFeatures.DTO_CODEGEN])
+
+
+def test_using_custom_path_parameter() -> None:
+    @get()
+    def my_route_handler() -> None: ...
+
+    with create_test_client(my_route_handler, path="/abc") as client:
+        response = client.get("/abc")
+        assert response.status_code == HTTP_200_OK

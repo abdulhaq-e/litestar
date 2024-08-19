@@ -445,6 +445,8 @@ class DTOBackend:
             if nested_depth == self.dto_factory.config.max_nested_depth:
                 raise RecursionError
 
+            unique_name = f"{unique_name}{field_definition.raw.__name__}"
+
             nested_field_definitions = self.parse_model(
                 model_type=field_definition.annotation,
                 exclude=exclude,
@@ -759,6 +761,24 @@ def _transfer_type_data(
             )
 
         return transfer_type.field_definition.instantiable_origin(source_value)
+
+    if isinstance(transfer_type, MappingType):
+        if transfer_type.has_nested:
+            return transfer_type.field_definition.instantiable_origin(
+                (
+                    key,
+                    _transfer_type_data(
+                        source_value=value,
+                        transfer_type=transfer_type.value_type,
+                        nested_as_dict=False,
+                        is_data_field=is_data_field,
+                    ),
+                )
+                for key, value in source_value.items()
+            )
+
+        return transfer_type.field_definition.instantiable_origin(source_value)
+
     return source_value
 
 

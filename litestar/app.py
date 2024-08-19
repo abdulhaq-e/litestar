@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import logging
 import os
+import warnings
 from contextlib import (
     AbstractAsyncContextManager,
     AsyncExitStack,
@@ -20,17 +21,18 @@ from litestar._asgi.utils import get_route_handlers, wrap_in_exception_handler
 from litestar._openapi.plugin import OpenAPIPlugin
 from litestar._openapi.schema_generation import openapi_schema_plugins
 from litestar.config.allowed_hosts import AllowedHostsConfig
-from litestar.config.app import AppConfig
+from litestar.config.app import AppConfig, ExperimentalFeatures
 from litestar.config.response_cache import ResponseCacheConfig
 from litestar.connection import Request, WebSocket
 from litestar.datastructures.state import State
 from litestar.events.emitter import BaseEventEmitterBackend, SimpleEventEmitter
 from litestar.exceptions import (
+    LitestarWarning,
     MissingDependencyException,
     NoRouteMatchFoundException,
 )
 from litestar.logging.config import LoggingConfig, get_logger_placeholder
-from litestar.middleware.cors import CORSMiddleware
+from litestar.middleware._internal.cors import CORSMiddleware
 from litestar.openapi.config import OpenAPIConfig
 from litestar.plugins import (
     CLIPluginProtocol,
@@ -55,7 +57,6 @@ from litestar.utils.warnings import warn_pdb_on_exception
 if TYPE_CHECKING:
     from typing_extensions import Self
 
-    from litestar.config.app import ExperimentalFeatures
     from litestar.config.compression import CompressionConfig
     from litestar.config.cors import CORSConfig
     from litestar.config.csrf import CSRFConfig
@@ -197,6 +198,7 @@ class Litestar(Router):
         openapi_config: OpenAPIConfig | None = DEFAULT_OPENAPI_CONFIG,
         opt: Mapping[str, Any] | None = None,
         parameters: ParametersMap | None = None,
+        path: str | None = None,
         plugins: Sequence[PluginProtocol] | None = None,
         request_class: type[Request] | None = None,
         response_cache_config: ResponseCacheConfig | None = None,
@@ -243,7 +245,7 @@ class Litestar(Router):
                 this app. Can be overridden by route handlers.
             compression_config: Configures compression behaviour of the application, this enabled a builtin or user
                 defined Compression middleware.
-            cors_config: If set, configures :class:`CORSMiddleware <.middleware.cors.CORSMiddleware>`.
+            cors_config: If set, configures CORS handling for the application.
             csrf_config: If set, configures :class:`CSRFMiddleware <.middleware.csrf.CSRFMiddleware>`.
             debug: If ``True``, app errors rendered as HTML with a stack trace.
             dependencies: A string keyed mapping of dependency :class:`Providers <.di.Provide>`.
@@ -276,6 +278,10 @@ class Litestar(Router):
                 :class:`ASGI Scope <.types.Scope>`.
             parameters: A mapping of :class:`Parameter <.params.Parameter>` definitions available to all application
                 paths.
+            path: A path fragment that is prefixed to all route handlers, controllers and routers associated
+                with the application instance.
+
+                .. versionadded:: 2.8.0
             pdb_on_exception: Drop into the PDB when an exception occurs.
             plugins: Sequence of plugins.
             request_class: An optional subclass of :class:`Request <.connection.Request>` to use for http connections.
@@ -349,6 +355,7 @@ class Litestar(Router):
             on_startup=list(on_startup or []),
             openapi_config=openapi_config,
             opt=dict(opt or {}),
+            path=path or "",
             parameters=parameters or {},
             pdb_on_exception=pdb_on_exception,
             plugins=self._get_default_plugins(list(plugins or [])),
@@ -392,10 +399,19 @@ class Litestar(Router):
             self._lifespan_managers.append(store)
         self._server_lifespan_managers = [p.server_lifespan for p in config.plugins or [] if isinstance(p, CLIPlugin)]
         self.experimental_features = frozenset(config.experimental_features or [])
+        if ExperimentalFeatures.DTO_CODEGEN in self.experimental_features:
+            warnings.warn(
+                "Use of redundant experimental feature flag DTO_CODEGEN. "
+                "DTO codegen backend is enabled by default since Litestar 2.8. The "
+                "DTO_CODEGEN feature flag can be safely removed from the configuration "
+                "and will be removed in version 3.0.",
+                category=LitestarWarning,
+                stacklevel=2,
+            )
+
         self.get_logger: GetLogger = get_logger_placeholder
         self.logger: Logger | None = None
         self.routes: list[HTTPRoute | ASGIRoute | WebSocketRoute] = []
-        self.asgi_router = ASGIRouter(app=self)
 
         self.after_exception = [ensure_async_callable(h) for h in config.after_exception]
         self.allowed_hosts = cast("AllowedHostsConfig | None", config.allowed_hosts)
@@ -425,7 +441,7 @@ class Litestar(Router):
         try:
             from starlette.exceptions import HTTPException as StarletteHTTPException
 
-            from litestar.middleware.exceptions.middleware import _starlette_exception_handler
+            from litestar.middleware._internal.exceptions.middleware import _starlette_exception_handler
 
             config.exception_handlers.setdefault(StarletteHTTPException, _starlette_exception_handler)
         except ImportError:
@@ -444,7 +460,7 @@ class Litestar(Router):
             middleware=config.middleware,
             opt=config.opt,
             parameters=config.parameters,
-            path="",
+            path=config.path,
             request_class=self.request_class,
             response_class=config.response_class,
             response_cookies=config.response_cookies,
@@ -461,6 +477,8 @@ class Litestar(Router):
             include_in_schema=config.include_in_schema,
             websocket_class=self.websocket_class,
         )
+
+        self.asgi_router = ASGIRouter(app=self)
 
         for route_handler in config.route_handlers:
             self.register(route_handler)
@@ -653,7 +671,8 @@ class Litestar(Router):
                 route.create_handler_map()
 
             elif isinstance(route, WebSocketRoute):
-                route.handler_parameter_model = route.create_handler_kwargs_model(route.route_handler)
+                handler = route.route_handler
+                route.handler_parameter_model = handler.create_kwargs_model(path_parameters=route.path_parameters)
 
             for plugin in self.plugins.receive_route:
                 plugin.receive_route(route)
@@ -742,11 +761,7 @@ class Litestar(Router):
         passed_parameters = set(path_parameters.keys())
 
         selected_route = next(
-            (
-                route
-                for route in routes
-                if passed_parameters.issuperset({param.name for param in route.path_parameters})
-            ),
+            (route for route in routes if passed_parameters.issuperset(route.path_parameters)),
             routes[-1],
         )
         output: list[str] = []
@@ -806,7 +821,7 @@ class Litestar(Router):
         if not isinstance(handler_fn, StaticFiles):
             raise NoRouteMatchFoundException(f"Handler with name {name} is not a static files handler")
 
-        return join_paths([handler_index["paths"][0], file_path])  # type: ignore[unreachable]
+        return join_paths([handler_index["paths"][0], file_path])
 
     @property
     def route_handler_method_view(self) -> dict[str, list[str]]:
@@ -825,14 +840,12 @@ class Litestar(Router):
 
         If CORS or TrustedHost configs are provided to the constructor, they will wrap the router as well.
         """
-        asgi_handler: ASGIApp = self.asgi_router
-        if self.cors_config:
-            asgi_handler = CORSMiddleware(app=asgi_handler, config=self.cors_config)
+        asgi_handler = wrap_in_exception_handler(app=self.asgi_router)
 
-        return wrap_in_exception_handler(
-            app=asgi_handler,
-            exception_handlers=self.exception_handlers or {},  # pyright: ignore
-        )
+        if self.cors_config:
+            return CORSMiddleware(app=asgi_handler, config=self.cors_config)
+
+        return asgi_handler
 
     def _wrap_send(self, send: Send, scope: Scope) -> Send:
         """Wrap the ASGI send and handles any 'before send' hooks.
@@ -860,7 +873,7 @@ class Litestar(Router):
         Returns:
             None
         """
-        self.plugins.get(OpenAPIPlugin)._build_openapi_schema()
+        self.plugins.get(OpenAPIPlugin)._build_openapi()
 
     def emit(self, event_id: str, *args: Any, **kwargs: Any) -> None:
         """Emit an event to all attached listeners.

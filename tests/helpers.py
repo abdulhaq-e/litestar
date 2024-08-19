@@ -51,7 +51,7 @@ async def maybe_async(obj: T) -> T: ...
 
 
 async def maybe_async(obj: Awaitable[T] | T) -> T:
-    return cast(T, await obj) if inspect.isawaitable(obj) else cast(T, obj)
+    return await obj if inspect.isawaitable(obj) else obj  # pyright: ignore
 
 
 class _AsyncContextManagerWrapper(AsyncContextManager):
@@ -106,3 +106,8 @@ def cleanup_logging_impl() -> Generator:
         queue_listener_handler.listener.stop()
         queue_listener_handler.close()
         del queue_listener_handler
+
+
+def not_none(val: T | None) -> T:
+    assert val is not None
+    return val

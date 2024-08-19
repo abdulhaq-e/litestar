@@ -1,8 +1,9 @@
-from typing import TYPE_CHECKING, List, Optional, Type, cast
+import dataclasses
+from typing import TYPE_CHECKING, Any, List, Optional, Type, cast
 from uuid import UUID
 
 import pytest
-from typing_extensions import Annotated
+from typing_extensions import Annotated, NewType
 
 from litestar import Controller, Litestar, Router, get
 from litestar._openapi.datastructures import OpenAPIContext
@@ -324,6 +325,46 @@ def test_parameter_examples() -> None:
         }
 
 
+def test_parameter_schema_extra() -> None:
+    @get()
+    async def handler(
+        query1: Annotated[
+            str,
+            Parameter(
+                schema_extra={
+                    "schema_not": Schema(
+                        any_of=[
+                            Schema(type=OpenAPIType.STRING, pattern=r"^somePrefix:.*$"),
+                            Schema(type=OpenAPIType.STRING, enum=["denied", "values"]),
+                        ]
+                    ),
+                }
+            ),
+        ],
+    ) -> Any:
+        return query1
+
+    @get()
+    async def error_handler(query1: Annotated[str, Parameter(schema_extra={"invalid": "dummy"})]) -> Any:
+        return query1
+
+    # Success
+    app = Litestar([handler])
+    schema = app.openapi_schema.to_schema()
+    assert schema["paths"]["/"]["get"]["parameters"][0]["schema"]["not"] == {
+        "anyOf": [
+            {"type": "string", "pattern": r"^somePrefix:.*$"},
+            {"type": "string", "enum": ["denied", "values"]},
+        ]
+    }
+
+    # Attempt to pass invalid key
+    app = Litestar([error_handler])
+    with pytest.raises(ValueError) as e:
+        app.openapi_schema
+    assert str(e.value).startswith("`schema_extra` declares key")
+
+
 def test_uuid_path_description_generation() -> None:
     # https://github.com/litestar-org/litestar/issues/2967
     @get("str/{id:str}")
@@ -340,3 +381,60 @@ def test_uuid_path_description_generation() -> None:
         response = client.get("/schema/openapi.json")
         assert response.json()["paths"]["/str/{id}"]["get"]["parameters"][0]["description"] == "String ID"
         assert response.json()["paths"]["/uuid/{id}"]["get"]["parameters"][0]["description"] == "UUID ID"
+
+
+def test_unwrap_new_type() -> None:
+    FancyString = NewType("FancyString", str)
+
+    @get("/{path_param:str}")
+    async def handler(
+        param: FancyString,
+        optional_param: Optional[FancyString],
+        path_param: FancyString,
+    ) -> FancyString:
+        return FancyString("")
+
+    app = Litestar([handler])
+    assert app.openapi_schema.paths["/{path_param}"].get.parameters[0].schema.type == OpenAPIType.STRING  # type: ignore[index, union-attr]
+    assert app.openapi_schema.paths["/{path_param}"].get.parameters[1].schema.one_of == [  # type: ignore[index, union-attr]
+        Schema(type=OpenAPIType.NULL),
+        Schema(type=OpenAPIType.STRING),
+    ]
+    assert app.openapi_schema.paths["/{path_param}"].get.parameters[2].schema.type == OpenAPIType.STRING  # type: ignore[index, union-attr]
+    assert (
+        app.openapi_schema.paths["/{path_param}"].get.responses["200"].content["application/json"].schema.type  # type: ignore[index, union-attr]
+        == OpenAPIType.STRING
+    )
+
+
+def test_unwrap_nested_new_type() -> None:
+    FancyString = NewType("FancyString", str)
+    FancierString = NewType("FancierString", FancyString)  # pyright: ignore
+
+    @get("/")
+    async def handler(
+        param: FancierString,
+    ) -> None:
+        return None
+
+    app = Litestar([handler])
+    assert app.openapi_schema.paths["/"].get.parameters[0].schema.type == OpenAPIType.STRING  # type: ignore[index, union-attr]
+
+
+def test_unwrap_annotated_new_type() -> None:
+    FancyString = NewType("FancyString", str)
+
+    @dataclasses.dataclass
+    class TestModel:
+        param: Annotated[FancyString, "foo"]
+
+    @get("/")
+    async def handler(
+        param: TestModel,
+    ) -> None:
+        return None
+
+    app = Litestar([handler])
+
+    testmodel_schema_name = app.openapi_schema.paths["/"].get.parameters[0].schema.value  # type: ignore[index, union-attr]
+    assert app.openapi_schema.components.schemas[testmodel_schema_name].properties["param"].type == OpenAPIType.STRING  # type: ignore[index, union-attr]

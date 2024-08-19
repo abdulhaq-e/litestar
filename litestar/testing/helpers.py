@@ -86,6 +86,7 @@ def create_test_client(
     openapi_config: OpenAPIConfig | None = DEFAULT_OPENAPI_CONFIG,
     opt: Mapping[str, Any] | None = None,
     parameters: ParametersMap | None = None,
+    path: str | None = None,
     plugins: Sequence[PluginProtocol] | None = None,
     lifespan: list[Callable[[Litestar], AbstractAsyncContextManager] | AbstractAsyncContextManager] | None = None,
     raise_server_exceptions: bool = True,
@@ -168,7 +169,7 @@ def create_test_client(
             this app. Can be overridden by route handlers.
         compression_config: Configures compression behaviour of the application, this enabled a builtin or user
             defined Compression middleware.
-        cors_config: If set, configures :class:`CORSMiddleware <.middleware.cors.CORSMiddleware>`.
+        cors_config: If set, configures CORS handling for the application.
         csrf_config: If set, configures :class:`CSRFMiddleware <.middleware.csrf.CSRFMiddleware>`.
         debug: If ``True``, app errors rendered as HTML with a stack trace.
         dependencies: A string keyed mapping of dependency :class:`Providers <.di.Provide>`.
@@ -201,6 +202,10 @@ def create_test_client(
             :class:`ASGI Scope <.types.Scope>`.
         parameters: A mapping of :class:`Parameter <.params.Parameter>` definitions available to all application
             paths.
+        path: A path fragment that is prefixed to all route handlers, controllers and routers associated
+            with the application instance.
+
+            .. versionadded:: 2.8.0
         pdb_on_exception: Drop into the PDB when an exception occurs.
         plugins: Sequence of plugins.
         request_class: An optional subclass of :class:`Request <.connection.Request>` to use for http connections.
@@ -273,6 +278,7 @@ def create_test_client(
         openapi_config=openapi_config,
         opt=opt,
         parameters=parameters,
+        path=path,
         pdb_on_exception=pdb_on_exception,
         plugins=plugins,
         request_class=request_class,
@@ -343,6 +349,7 @@ def create_async_test_client(
     opt: Mapping[str, Any] | None = None,
     parameters: ParametersMap | None = None,
     pdb_on_exception: bool | None = None,
+    path: str | None = None,
     plugins: Sequence[PluginProtocol] | None = None,
     raise_server_exceptions: bool = True,
     request_class: type[Request] | None = None,
@@ -423,7 +430,7 @@ def create_async_test_client(
             this app. Can be overridden by route handlers.
         compression_config: Configures compression behaviour of the application, this enabled a builtin or user
             defined Compression middleware.
-        cors_config: If set, configures :class:`CORSMiddleware <.middleware.cors.CORSMiddleware>`.
+        cors_config: If set, configures CORS handling for the application.
         csrf_config: If set, configures :class:`CSRFMiddleware <.middleware.csrf.CSRFMiddleware>`.
         debug: If ``True``, app errors rendered as HTML with a stack trace.
         dependencies: A string keyed mapping of dependency :class:`Providers <.di.Provide>`.
@@ -456,6 +463,10 @@ def create_async_test_client(
             :class:`ASGI Scope <.types.Scope>`.
         parameters: A mapping of :class:`Parameter <.params.Parameter>` definitions available to all application
             paths.
+        path: A path fragment that is prefixed to all route handlers, controllers and routers associated
+            with the application instance.
+
+            .. versionadded:: 2.8.0
         pdb_on_exception: Drop into the PDB when an exception occurs.
         plugins: Sequence of plugins.
         request_class: An optional subclass of :class:`Request <.connection.Request>` to use for http connections.
@@ -527,6 +538,7 @@ def create_async_test_client(
         openapi_config=openapi_config,
         opt=opt,
         parameters=parameters,
+        path=path,
         pdb_on_exception=pdb_on_exception,
         plugins=plugins,
         request_class=request_class,
