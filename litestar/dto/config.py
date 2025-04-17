@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from litestar.exceptions import ImproperlyConfiguredException
 
 if TYPE_CHECKING:
+    from litestar.dto.base_dto import AbstractDTO
     from litestar.dto.types import RenameStrategy
 
 __all__ = ("DTOConfig",)
@@ -58,6 +59,8 @@ class DTOConfig:
     """Use the experimental codegen backend"""
     forbid_unknown_fields: bool = False
     """Raise an exception for fields present in the raw data that are not defined on the model"""
+    custom_dto_factories: dict[Any, type[AbstractDTO]] = field(default_factory=dict)
+    """Use custom dto factories for specific models."""
 
     def __post_init__(self) -> None:
         if self.include and self.exclude:
