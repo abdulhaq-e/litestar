@@ -9,7 +9,7 @@ from msgspec.msgpack import decode as _decode_msgpack_plain
 from litestar.datastructures.multi_dicts import FormMultiDict
 from litestar.enums import HttpMethod, MediaType, ScopeType
 from litestar.exceptions import ClientException, ImproperlyConfiguredException, SerializationException
-from litestar.handlers.http_handlers import HTTPRouteHandler
+from litestar.handlers.http_handlers.base import AutoOptionsHttpRouteHandler
 from litestar.response import Response
 from litestar.routes.base import BaseRoute
 from litestar.status_codes import HTTP_204_NO_CONTENT
@@ -19,6 +19,7 @@ from litestar.utils.scope.state import ScopeState
 if TYPE_CHECKING:
     from litestar._kwargs import KwargsModel
     from litestar.connection import Request
+    from litestar.handlers.http_handlers import HTTPRouteHandler
     from litestar.types import ASGIApp, HTTPScope, Method, Receive, Scope, Send
 
 
@@ -237,7 +238,7 @@ class HTTPRoute(BaseRoute):
                 media_type=MediaType.TEXT,
             )
 
-        return HTTPRouteHandler(
+        return AutoOptionsHttpRouteHandler(
             path=path,
             http_method=[HttpMethod.OPTIONS],
             include_in_schema=False,
