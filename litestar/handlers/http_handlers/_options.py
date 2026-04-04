@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from litestar.enums import HttpMethod, MediaType
-from litestar.handlers import HTTPRouteHandler
+from litestar.handlers.http_handlers.base import AutoOptionsHttpRouteHandler
 from litestar.response import Response
 from litestar.status_codes import HTTP_204_NO_CONTENT
 
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from litestar.types import Method
 
 
-def create_options_handler(path: str, allow_methods: Iterable[Method]) -> HTTPRouteHandler:
+def create_options_handler(path: str, allow_methods: Iterable[Method]) -> AutoOptionsHttpRouteHandler:
     """Args:
         path: The route path
 
@@ -34,6 +34,6 @@ def create_options_handler(path: str, allow_methods: Iterable[Method]) -> HTTPRo
             media_type=MediaType.TEXT,
         )
 
-    return HTTPRouteHandler(
+    return AutoOptionsHttpRouteHandler(
         path=path, http_method=[HttpMethod.OPTIONS], include_in_schema=False, sync_to_thread=False, fn=options_handler
     )

@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from litestar.background_tasks import BackgroundTask, BackgroundTasks
     from litestar.config.response_cache import CACHE_FOREVER
     from litestar.datastructures.cookie import Cookie
+    from litestar.di import Provide
     from litestar.dto import AbstractDTO
     from litestar.openapi.datastructures import ResponseSpec
     from litestar.openapi.spec import SecurityRequirement
@@ -84,7 +85,7 @@ if TYPE_CHECKING:
     from litestar.types.composite_types import ParametersMap, TypeDecodersSequence
     from litestar.typing import FieldDefinition
 
-__all__ = ("HTTPRouteHandler",)
+__all__ = ("AutoOptionsHttpRouteHandler", "HTTPRouteHandler")
 
 
 class ResponseHandlerMap(TypedDict):
@@ -800,3 +801,14 @@ class HTTPRouteHandler(BaseRouteHandler):
         )
 
         return await handler(data=data, request=request)
+
+
+route = HTTPRouteHandler
+
+
+class AutoOptionsHttpRouteHandler(HTTPRouteHandler):
+    def resolve_layered_parameters(self) -> dict[str, FieldDefinition]:
+        return {}
+
+    def resolve_dependencies(self) -> dict[str, Provide]:
+        return {}
