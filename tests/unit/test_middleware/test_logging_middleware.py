@@ -8,11 +8,13 @@ from structlog.testing import capture_logs
 
 from litestar import Response, get, post
 from litestar.config.compression import CompressionConfig
-from litestar.connection import Request
+from litestar.connection import ASGIConnection, Request
 from litestar.datastructures import Cookie, UploadFile
 from litestar.enums import RequestEncodingType
 from litestar.exceptions import NotAuthorizedException, PermissionDeniedException
 from litestar.handlers import HTTPRouteHandler
+from litestar.middleware.authentication import AbstractAuthenticationMiddleware, AuthenticationResult
+from litestar.middleware.base import DefineMiddleware
 from litestar.middleware.logging import LoggingMiddleware
 from litestar.params import Body
 from litestar.status_codes import HTTP_200_OK, HTTP_201_CREATED
@@ -323,6 +325,45 @@ def test_structlog_invalid_request_body_handled() -> None:
         middleware=[LoggingMiddleware(structlog.get_logger("litestar.test"))],
     ) as client:
         assert client.post("/", headers={"Content-Type": "application/json"}, content=b'{"a": "b",}').status_code == 400
+
+
+def test_logging_middleware_no_keyerror_when_auth_middleware_raises_before_send(caplog: "LogCaptureFixture") -> None:
+    """Regression test: LoggingMiddleware must not raise KeyError when an HTTPException
+    is raised from an inner middleware before any ASGI send call (e.g. an auth middleware
+    that rejects the request outright without sending a response body).
+
+    Before the fix, the except-HTTPException branch in LoggingMiddleware.handle() set
+    HTTP_RESPONSE_START in log_context but never set HTTP_RESPONSE_BODY, so
+    extract_response_data() would KeyError on the .pop() and the whole request would
+    surface as 500 instead of the intended 401.
+    """
+
+    class AlwaysRejectAuthMiddleware(AbstractAuthenticationMiddleware):
+        async def authenticate_request(self, connection: ASGIConnection) -> AuthenticationResult:
+            raise NotAuthorizedException("Token expired")
+
+    @get("/protected")
+    def protected_handler() -> dict:
+        return {"secret": "data"}
+
+    with (
+        create_test_client(
+            route_handlers=[protected_handler],
+            middleware=[
+                LoggingMiddleware(
+                    "litestar.test",
+                    response_log_fields=["status_code"],
+                    request_log_fields=["path"],
+                ),
+                DefineMiddleware(AlwaysRejectAuthMiddleware),
+            ],
+        ) as client,
+        caplog.at_level(INFO),
+    ):
+        response = client.get("/protected")
+        # Before the fix this was 500 because KeyError propagated through the middleware stack
+        assert response.status_code == 401
+        assert any("status_code=401" in msg for msg in caplog.messages)
 
 
 def test_logging_middleware_records_correct_status_for_exceptions(caplog: "LogCaptureFixture") -> None:

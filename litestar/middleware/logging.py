@@ -130,14 +130,28 @@ class LoggingMiddleware(ASGIMiddleware):
             # Log response with the correct status code from the exception
             if self.response_log_fields:
                 scope_state = ScopeState.from_scope(scope)
-                scope_state.log_context[HTTP_RESPONSE_START] = {"status": exc.status_code}
+                scope_state.log_context.setdefault(
+                    HTTP_RESPONSE_START,
+                    {"type": HTTP_RESPONSE_START, "status": exc.status_code, "headers": []},
+                )
+                scope_state.log_context.setdefault(
+                    HTTP_RESPONSE_BODY,
+                    {"type": HTTP_RESPONSE_BODY, "body": b"", "more_body": False},
+                )
                 self.log_response(scope=scope)
             raise
         except Exception:
             # Log response with 500 status for unhandled exceptions
             if self.response_log_fields:
                 scope_state = ScopeState.from_scope(scope)
-                scope_state.log_context[HTTP_RESPONSE_START] = {"status": HTTP_500_INTERNAL_SERVER_ERROR}
+                scope_state.log_context.setdefault(
+                    HTTP_RESPONSE_START,
+                    {"type": HTTP_RESPONSE_START, "status": HTTP_500_INTERNAL_SERVER_ERROR, "headers": []},
+                )
+                scope_state.log_context.setdefault(
+                    HTTP_RESPONSE_BODY,
+                    {"type": HTTP_RESPONSE_BODY, "body": b"", "more_body": False},
+                )
                 self.log_response(scope=scope)
             raise
 
